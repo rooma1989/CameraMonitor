@@ -36,6 +36,7 @@ class DeviceRow(QPushButton):
         self.cells=[]
         for _ in range(5):
             label=QLabel()
+            label.setTextFormat(Qt.TextFormat.PlainText)
             label.setWordWrap(True)
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             layout.addWidget(label,1)

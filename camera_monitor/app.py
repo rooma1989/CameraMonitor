@@ -30,8 +30,11 @@ class SearchWorker(QThread):
 
 
 class Window(QMainWindow):
-    def __init__(self):
+    def __init__(self, device_names=None):
         super().__init__()
+        from .device_names import DeviceNames
+        self.device_names = device_names if device_names is not None else DeviceNames()
+        self.device_names.changed.connect(self.refresh_device_name)
         self.worker = None
         self.devices = {}
         self.networks = []
@@ -99,7 +102,7 @@ class Window(QMainWindow):
         self.detail_toggle.toggled.connect(self.diagnostics.setVisible)
         split.addWidget(sidebar)
         workspace=QWidget();work=QVBoxLayout(workspace);work.setContentsMargins(0,0,0,0)
-        self.wall=MultiView([],self,embedded=True)
+        self.wall=MultiView([],self,embedded=True,device_names=self.device_names)
         self.wall.playing.connect(self.video_verified)
         self.wall.device_status.connect(self.update_device_status)
         self.wall.fullscreen_requested.connect(self.toggle_fullscreen)
@@ -243,12 +246,20 @@ class Window(QMainWindow):
         self.worker.finished.connect(self.finish_scan)
         self.worker.start()
 
+    def refresh_device_name(self, ip, name):
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).text() == ip:
+                self.table.setCellText(row, 1, self.device_names.display(self.devices[ip]))
+        self.wall.update_devices(list(self.devices.values()))
+        self.filter_devices(self.device_filter.text())
+        if self.table.currentRow() >= 0:self.show_details()
+
     def add_device(self, device: Device):
         row = list(self.devices).index(device.ip) if device.ip in self.devices else self.table.rowCount()
         self.devices[device.ip] = device
         if row == self.table.rowCount():
             self.table.insertRow(row)
-        for column, text in enumerate((device.ip, device.name or '未提供', device.model or '未提供', ' + '.join(device.protocols), '已发现 · 未验证视频')):
+        for column, text in enumerate((device.ip, self.device_names.display(device), device.model or '未提供', ' + '.join(device.protocols), '已发现 · 未验证视频')):
             self.table.setCellText(row, column, text)
         self.status.setText(f'已发现 {len(self.devices)} 台设备')
         self.wall.update_devices(list(self.devices.values()))

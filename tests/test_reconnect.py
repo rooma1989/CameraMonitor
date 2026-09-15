@@ -49,6 +49,33 @@ class ReconnectTests(unittest.TestCase):
    worker.start();self.assertTrue(worker.wait(2000))
   self.assertEqual(op.call_count,1)
 
+ def test_diagnostics_distinguish_timeout_without_exposing_url(self):
+  worker=Decoder('rtsp://user:private-password@127.0.0.1/live')
+  events=[]
+  worker.diagnostic.connect(events.append,Qt.ConnectionType.DirectConnection)
+  with patch('camera_monitor.playback.av.open',side_effect=av.error.TimeoutError(110,'private-password')):
+   worker.start();self.assertTrue(worker.wait(2000))
+  self.assertTrue(any('超时' in e for e in events))
+  self.assertNotIn('private-password',' '.join(events))
+  self.assertNotIn('rtsp://',' '.join(events))
+
+ def test_diagnostics_report_eof_duration_and_frame_count(self):
+  worker=Decoder(self.video_path);events=[]
+  worker.diagnostic.connect(events.append,Qt.ConnectionType.DirectConnection)
+  worker.start();self.assertTrue(worker.wait(2000))
+  self.assertTrue(any('流结束' in e and '帧=1' in e for e in events))
+
+ def test_selected_udp_transport_is_used_on_reconnect(self):
+  worker=Decoder('rtsp://127.0.0.1/live', transport='udp');real_open=av.open;options=[]
+  def source(*a,**kwargs):
+   options.append(kwargs['options']['rtsp_transport'])
+   if len(options)==2:worker.cancel.set()
+   return real_open(self.video_path)
+  with patch('camera_monitor.playback.av.open',side_effect=source):
+   with patch.object(worker.cancel,'wait',return_value=False):
+    worker.start();self.assertTrue(worker.wait(2000))
+  self.assertEqual(options,['udp','udp'])
+
  def test_authentication_failure_after_success_stops_recovery(self):
   worker=Decoder('rtsp://127.0.0.1/live');real_open=av.open;opens=[]
   def source(*a,**k):

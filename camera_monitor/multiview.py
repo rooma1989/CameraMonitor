@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QWidget,QDialog,QVBoxLayout,QHBoxLayout,QGridLayo
 from .choices import ChoiceButton
 from .playback import PlayerWindow
 from .credentials import CredentialStore
+from .device_names import DeviceNames
 
 
 class CameraTile(QFrame):
@@ -17,7 +18,7 @@ class CameraTile(QFrame):
         self.setObjectName('cameraTile')
         self.setStyleSheet('QFrame#cameraTile {background:white; border:1px solid #dce4ed; border-radius:6px;}')
         self.monitor=parent
-        self.player=PlayerWindow(device,self,credential_store=credential_store)
+        self.player=PlayerWindow(device,self,credential_store=credential_store,device_names=parent.device_names)
         self.player.hosted=True
         self.player.credentials_required.connect(self.show_settings)
         self.player.preview_width=1280
@@ -28,7 +29,9 @@ class CameraTile(QFrame):
         self.player.surface.set_fill(False)
         self.player.surface.aspect_changed.connect(lambda _:self.monitor.schedule_layout())
         self.player.surface.activated.connect(lambda:self.monitor.toggle_focus(self))
-        self.title=QLabel(f'{device.name or "摄像头"} · {device.ip}',self)
+        self.title=QLabel(f'{parent.device_names.display(device)} · {device.ip}',self)
+        self.title.setTextFormat(Qt.TextFormat.PlainText)
+        parent.device_names.changed.connect(self.refresh_name)
         self.title.setStyleSheet('background:transparent; font-weight:600; font-size:13px; padding-left:12px;')
         self.title.setToolTip(self.title.text())
         self.status=QLabel('待连接',self)
@@ -59,6 +62,11 @@ class CameraTile(QFrame):
         self.control_timer=QTimer(self);self.control_timer.setInterval(200)
         self.control_timer.timeout.connect(self.sync_controls);self.control_timer.start()
         self.sync_controls()
+
+    def refresh_name(self, ip, name):
+        if ip == self.player.device.ip:
+            self.title.setText(f'{self.monitor.device_names.display(self.player.device)} · {ip}')
+            self.title.setToolTip(self.title.text())
 
     def update_status(self,text):
         live=text.startswith('正在播放') or text.startswith('画面正在播放')
@@ -121,9 +129,10 @@ class MultiView(QDialog):
     tile_removing=Signal(object)
     settings_requested=Signal(object)
 
-    def __init__(self,devices,parent=None,credential_store=None,embedded=False):
+    def __init__(self,devices,parent=None,credential_store=None,embedded=False,device_names=None):
         super().__init__(parent)
         self.embedded=embedded
+        self.device_names=device_names if device_names is not None else DeviceNames()
         if embedded:self.setWindowFlags(Qt.WindowType.Widget)
         self.setWindowTitle('Camera Monitor · 多画面监控')
         self.resize(1200,850)
@@ -208,7 +217,7 @@ class MultiView(QDialog):
 
     def update_devices(self,devices):
         self.choice.clear()
-        for device in devices:self.choice.addItem(f'{device.ip} · {device.name or device.model or "摄像头"}',device)
+        for device in devices:self.choice.addItem(f'{device.ip} · {self.device_names.display(device)}',device)
         self.add.setEnabled(self.choice.count()>0)
 
     def active_tiles(self):return list(self.tiles)
