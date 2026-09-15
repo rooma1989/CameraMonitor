@@ -10,3 +10,4 @@ build-win/
 dist-win/
 releases/
 *.key
+*.crt

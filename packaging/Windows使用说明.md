@@ -11,7 +11,7 @@
 - 记住密码使用当前 Windows 用户的凭据管理器；不会随 exe 带入其他电脑。
 - 视频中断后，每次等待 3 秒重试；停止按钮可取消。
 
-本版目标为 Windows 11 x64（Intel / AMD）。当前尚未完成 Windows 实机验收。
+本版目标为 Windows 11 x64（Intel / AMD）。已由使用者在 Windows 实机运行，并确认 UDP 模式播放稳定。
 未配置 Windows 代码签名，可能显示未知发布者提示。遵循所在电脑的安全策略。
 
 ## 在 Windows 生成 exe
