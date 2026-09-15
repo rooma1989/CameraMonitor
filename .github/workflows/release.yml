@@ -30,7 +30,7 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean packaging/CameraMonitor.spec
           codesign --verify --deep --strict 'dist/Camera Monitor.app'
-          lipo -verify_arch arm64 'dist/Camera Monitor.app/Contents/MacOS/CameraMonitor'
+          lipo 'dist/Camera Monitor.app/Contents/MacOS/CameraMonitor' -verify_arch arm64
           python packaging/smoke-macos-app.py 'dist/Camera Monitor.app'
       - name: Prepare Apple Silicon download
         run: |
