@@ -9,13 +9,13 @@ def _cells(x, y, width, height, columns, rows):
             for r in range(rows) for c in range(columns)]
 
 
-def wall_rectangles(count, width, height, featured=True):
+def wall_rectangles(count, width, height, featured=True, header=0, gap=0):
     if count <= 0:return []
     if count == 1:return [(0,0,width,height)]
     # Bottom columns align with the main view's vertical edge.
     presets = {6:(3,2,[2]), 9:(4,2,[2,2]), 10:(5,3,[2,2]),
                12:(5,2,[2,2,2]), 15:(4,2,[3,3])}
-    if featured and count in presets:
+    if featured and count in (6,10,15):
         bottom_columns, main_columns, right_rows = presets[count]
         main_width = width*main_columns//bottom_columns
         bottom_rows=2 if count==15 else 1
@@ -28,12 +28,11 @@ def wall_rectangles(count, width, height, featured=True):
             result.extend(_cells(x,0,w,main_height,1,rows))
         result.extend(_cells(0,main_height,width,height-main_height,bottom_columns,bottom_rows))
         return result
-    # Balanced rows fill the screen even at other device counts.
-    columns=math.ceil(math.sqrt(count))
-    rows=math.ceil(count/columns)
-    result=[];remaining=count
-    for row in range(rows):
-        cells=math.ceil(remaining/(rows-row))
-        y=height*row//rows;h=height*(row+1)//rows-y
-        result.extend(_cells(0,y,width,h,cells,1));remaining-=cells
-    return result
+    # Equal fixed slots, independent of connected camera count.
+    columns, rows = {4:(2,2),9:(3,3),12:(4,3),16:(4,4),20:(5,4),25:(5,5)}.get(count,(math.ceil(math.sqrt(count)),math.ceil(count/math.ceil(math.sqrt(count)))))
+    # Fit the entire fixed grid to the canvas. Empty slots retain their geometry.
+    cell_width=max(1,min(width//columns, int(max(1,height/rows-header-gap)*16/9)+gap))
+    cell_height=round(max(1,cell_width-gap)*9/16)+header+gap
+    wall_width=cell_width*columns;wall_height=cell_height*rows
+    return _cells((width-wall_width)//2,(height-wall_height)//2,
+                  wall_width,wall_height,columns,rows)[:count]

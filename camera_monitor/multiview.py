@@ -2,7 +2,7 @@
 from PySide6.QtCore import Qt,QTimer,Signal,QEvent,QMimeData
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (QWidget,QDialog,QVBoxLayout,QHBoxLayout,QGridLayout,
-    QLabel,QPushButton,QFrame,QScrollArea,QApplication,QMenu)
+    QLabel,QPushButton,QFrame,QScrollArea,QApplication,QMenu,QLineEdit)
 from .choices import ChoiceButton
 from .playback import PlayerWindow
 from .credentials import CredentialStore
@@ -102,7 +102,10 @@ class CameraTile(QFrame):
         self.title.setVisible(not fullscreen);self.status.setVisible(not fullscreen)
         self.title.setGeometry(0,0,max(1,self.width()-75),header)
         self.status.setGeometry(max(0,self.width()-75),0,65,header)
-        self.player.surface.setGeometry(0,header,self.width(),max(1,self.height()-header))
+        available=max(1,self.height()-header)
+        video_width=min(self.width(),int(available*16/9))
+        video_height=max(1,round(video_width*9/16))
+        self.player.surface.setGeometry((self.width()-video_width)//2,header+(available-video_height)//2,video_width,video_height)
         width=min(self.player.surface.width(),350)
         self.controls.setGeometry(self.player.surface.width()-width,max(0,self.player.surface.height()-38),width,38)
         self.name_overlay.setMaximumWidth(max(1,self.player.surface.width()-16))
@@ -119,8 +122,15 @@ class CameraTile(QFrame):
         if watched is self.player.surface:
             if event.type()==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton:
                 self.drag_start=event.position().toPoint()
-            elif event.type()==QEvent.Type.MouseButtonRelease:
+            elif event.type()==QEvent.Type.MouseButtonDblClick:
                 self.drag_start=None
+                return True
+            elif event.type()==QEvent.Type.MouseButtonRelease:
+                clicked=self.drag_start is not None and event.button()==Qt.MouseButton.LeftButton
+                self.drag_start=None
+                if clicked:
+                    self.monitor.toggle_focus(self)
+                    return True
             elif event.type()==QEvent.Type.MouseMove and self.drag_start is not None and event.buttons() & Qt.MouseButton.LeftButton:
                 if (event.position().toPoint()-self.drag_start).manhattanLength() >= QApplication.startDragDistance():
                     self.drag_start=None
@@ -189,9 +199,9 @@ class MultiView(QDialog):
         self.resize(1200,850)
         self.setMinimumSize(620,350) if embedded else self.setMinimumSize(820,600)
         self.credential_store=credential_store or CredentialStore()
-        self.capacity=15
+        self.capacity=4
         self.presentation=False
-        self.layout_mode="auto"
+        self.layout_mode=4
         self.focused_tile=None
         self.layout_timer=QTimer(self)
         self.layout_timer.setSingleShot(True)
@@ -208,10 +218,10 @@ class MultiView(QDialog):
         toolbar.setContentsMargins(0,0,0,0)
         toolbar.addWidget(heading)
         toolbar.addStretch()
-        self.auto=QPushButton('自动')
+        self.auto=QPushButton('4 格默认')
         self.auto.setMinimumWidth(90)
         self.auto.clicked.connect(lambda:self.change_layout('auto'))
-        toolbar.addWidget(self.auto)
+        self.auto.hide()
         self.choice=ChoiceButton()
         toolbar.addWidget(self.choice,1)
         self.add=QPushButton('添加摄像头')
@@ -226,8 +236,8 @@ class MultiView(QDialog):
         self.nine.clicked.connect(lambda:self.change_layout(9))
         toolbar.addWidget(self.nine)
         self.featured=ChoiceButton()
-        self.featured.addItem('一大多小 · 自动', 'auto')
-        for count in (6,9,10,12,15):self.featured.addItem(f'一大多小 · {count}路',count)
+        for count in (4,6,9,10,12,15,16,20,25):
+            self.featured.addItem(f'{count} 格' + (' · 一大多小' if count in (6,10,15) else ' · 等分'),count)
         self.featured.currentIndexChanged.connect(lambda _:self.change_layout('featured'))
         toolbar.addWidget(self.featured)
         self.display_mode=ChoiceButton()
@@ -246,6 +256,26 @@ class MultiView(QDialog):
         self.fullscreen.clicked.connect(self.fullscreen_requested)
         toolbar.addWidget(self.fullscreen)
         layout.addWidget(self.toolbar_widget)
+        self.organization_button=QPushButton('机构名称')
+        toolbar.addWidget(self.organization_button)
+        self.organization_panel=QWidget()
+        organization_layout=QHBoxLayout(self.organization_panel)
+        organization_layout.addWidget(QLabel('全屏顶部名称'))
+        self.organization_input=QLineEdit(self.device_names.settings.value('monitor/organization',''))
+        self.organization_input.setMaxLength(80)
+        self.organization_input.setPlaceholderText('例如：阳光养老院（留空不显示）')
+        organization_layout.addWidget(self.organization_input)
+        save=QPushButton('保存');organization_layout.addWidget(save)
+        save.clicked.connect(self.save_organization)
+        self.organization_input.returnPressed.connect(self.save_organization)
+        self.organization_button.clicked.connect(lambda:self.organization_panel.setVisible(self.organization_panel.isHidden()))
+        layout.addWidget(self.organization_panel);self.organization_panel.hide()
+        self.organization_header=QLabel(self.organization_input.text().strip())
+        self.organization_header.setTextFormat(Qt.TextFormat.PlainText)
+        self.organization_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.organization_header.setFixedHeight(48)
+        self.organization_header.setStyleSheet('font-size:24px;font-weight:600;color:white;background:#152235;')
+        layout.addWidget(self.organization_header);self.organization_header.hide()
         self.message=QLabel('每格独立播放；需要密码时打开该格的“连接设置”。')
         self.message.setWordWrap(True)
         self.message.hide()
@@ -254,13 +284,14 @@ class MultiView(QDialog):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidgetResizable(True)
         self.canvas=WatchCanvas()
+        self.canvas.setAttribute(Qt.WidgetAttribute.WA_StyledBackground,True)
         self.canvas.resized.connect(self.schedule_layout)
         self.empty=QLabel('双击左侧设备，开始实时监控',self.canvas)
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setStyleSheet('color:#8191a5; font-size:16px;')
         scroll.setWidget(self.canvas)
         layout.addWidget(scroll,1)
-        self.hint=QLabel('拖动交换画面 · 双击放大 · 全屏按 Esc 返回')
+        self.hint=QLabel('拖动交换画面 · 单击放大 / 返回 · 全屏按 Esc 返回')
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.hint.setStyleSheet('color:#8191a5; font-size:13px; padding:12px;')
         layout.addWidget(self.hint)
@@ -272,6 +303,20 @@ class MultiView(QDialog):
             self.display_mode.hide()
         self.update_devices(devices)
         self.relayout()
+
+    def save_organization(self):
+        from PySide6.QtCore import QSettings
+        name=self.organization_input.text().strip()
+        settings=self.device_names.settings
+        previous=settings.value('monitor/organization','')
+        settings.setValue('monitor/organization',name);settings.sync()
+        if settings.status()!=QSettings.Status.NoError:
+            settings.setValue('monitor/organization',previous)
+            self.hint.setText('机构名称保存失败，请检查本机存储权限。');return
+        self.organization_header.setText(name)
+        self.organization_header.setVisible(self.presentation and bool(name))
+        self.organization_panel.hide()
+        self.schedule_layout()
 
     def update_display_mode(self):
         for tile in self.tiles:tile.player.surface.set_stretch(True)
@@ -293,7 +338,7 @@ class MultiView(QDialog):
             self.hint.setText('此摄像头已在监控画面中。')
             return False
         if len(self.tiles)>=self.capacity:
-            self.hint.setText('当前布局已满，请切换自动或更大布局。')
+            self.hint.setText('当前布局已满，请选择格子更多的布局。')
             return False
         tile=CameraTile(len(self.tiles)+1,device,self.credential_store,self)
         tile.setParent(self.canvas)
@@ -314,10 +359,25 @@ class MultiView(QDialog):
     def relayout(self):
         if self.closing:return
         self.empty.setGeometry(self.canvas.rect())
-        self.empty.setVisible(not self.tiles)
+        self.empty.hide()
         visible=[self.focused_tile] if self.focused_tile in self.tiles else list(self.tiles)
         width=max(1,self.canvas.width());height=max(1,self.canvas.height())
-        rects=wall_rectangles(len(visible),width,height,self.layout_mode in ('auto','featured'))
+        focused=self.focused_tile in self.tiles
+        count=1 if focused else self.capacity
+        rects=wall_rectangles(count,width,height,not focused and self.capacity in (6,10,15),
+                              header=0 if self.presentation else CameraTile.HEADER,
+                              gap=1 if self.presentation else 4)
+        missing=count-len(visible)
+        while len(self.placeholders)>missing:
+            placeholder=self.placeholders.pop();placeholder.hide();placeholder.deleteLater()
+        while len(self.placeholders)<missing:
+            placeholder=QLabel(self.canvas)
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setStyleSheet('background:#172333;color:#8293a8;border:1px solid #354255;')
+            self.placeholders.append(placeholder)
+        for index,(placeholder,rect) in enumerate(zip(self.placeholders,rects[len(visible):]),len(visible)+1):
+            placeholder.setText(f'画面 {index:02d}\n暂无摄像头')
+            placeholder.setGeometry(*rect);placeholder.show()
         for tile,(x,y,w,h) in zip(visible,rects):
             gap=1 if self.presentation else 4
             tile.setGeometry(x,y,max(1,w-gap),max(1,h-gap))
@@ -330,7 +390,10 @@ class MultiView(QDialog):
 
     def set_presentation(self,enabled):
         self.presentation=enabled
+        self.canvas.setStyleSheet('background:#101a28;' if enabled else '')
         self.toolbar_widget.setVisible(not enabled);self.hint.setVisible(not enabled)
+        if enabled:self.organization_panel.hide()
+        self.organization_header.setVisible(enabled and bool(self.organization_header.text()))
         self.layout().setContentsMargins(*((0,0,0,0) if enabled else (9,9,9,9)))
         self.layout().setSpacing(0 if enabled else 6)
         self.relayout();self.schedule_layout()
@@ -348,11 +411,16 @@ class MultiView(QDialog):
         self.relayout()
 
     def change_layout(self,capacity):
-        if capacity not in ('auto','featured',4,9):return False
-        limit=(self.featured.currentData() if self.featured.currentData()!='auto' else 15) if capacity=='featured' else (15 if capacity=='auto' else capacity)
+        if capacity=='featured':capacity=self.featured.currentData()
+        if capacity=='auto':capacity=4
+        if capacity not in (4,6,9,10,12,15,16,20,25):return False
+        limit=capacity
         if len(self.tiles)>limit:
             self.hint.setText('已有画面数量超过所选布局，请先移除多余设备。');return False
         self.layout_mode=capacity;self.capacity=limit
+        self.featured.blockSignals(True)
+        self.featured.setCurrentIndex((4,6,9,10,12,15,16,20,25).index(capacity))
+        self.featured.blockSignals(False)
         self.focused_tile=None;self.relayout();return True
 
     def remove_tile(self,tile):

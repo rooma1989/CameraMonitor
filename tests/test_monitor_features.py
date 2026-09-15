@@ -69,7 +69,7 @@ class MonitorFeatures(unittest.TestCase):
 
  def test_every_featured_layout_covers_canvas_once_at_different_sizes(self):
   from camera_monitor.wall_layout import wall_rectangles
-  for count in (6,9,10,12,15):
+  for count in (6,10,15):
    for width,height in ((1920,1080),(1365,767),(1000,1200)):
     with self.subTest(count=count,size=(width,height)):
      rects=wall_rectangles(count,width,height)
@@ -81,14 +81,14 @@ class MonitorFeatures(unittest.TestCase):
       for xx,yy,ww,hh in rects[i+1:]:
        self.assertFalse(max(x,xx)<min(x+w,xx+ww) and max(y,yy)<min(y+h,yy+hh))
  def test_all_fifteen_tiles_visible_in_presentation_and_order_survives_readd(self):
-  w=self.window();w.show()
+  w=self.window();w.wall.change_layout(15);w.show()
   for i in range(15):self.assertTrue(w.wall.add_device(Device(str(i))))
   self.assertFalse(w.wall.add_device(Device('overflow')))
   w.toggle_fullscreen();self.app.processEvents()
   self.assertTrue(all(t.isVisible() for t in w.wall.tiles))
   self.assertFalse(any(t.controls.isVisible() for t in w.wall.tiles))
   w.wall.swap_tiles(w.wall.tiles[0],w.wall.tiles[-1])
-  again=self.window()
+  again=self.window();again.wall.change_layout(15)
   for i in range(15):again.wall.add_device(Device(str(i)))
   self.assertEqual([t.player.device.ip for t in again.wall.tiles],self.names.order())
  def test_batch_save_failure_does_not_change_device_or_echo_secret(self):
@@ -147,3 +147,31 @@ class MonitorFeatures(unittest.TestCase):
   panel.checks[1][1].setChecked(True);panel.username.setText('viewer');panel.password.setText('test-only')
   panel.submit_credentials();apply.assert_called_once_with(['two'],'viewer','test-only',True)
   self.assertEqual(panel.password.text(),'');panel.close()
+
+ def test_fixed_slots_ratio_click_and_organization(self):
+  from PySide6.QtTest import QTest
+  w=self.window();w.resize(1500,900);w.show()
+  for ip in ('one','two'):w.wall.add_device(Device(ip))
+  for count in (4,9,12,16,20,25):
+   self.assertTrue(w.wall.change_layout(count));self.app.processEvents();w.wall.relayout()
+   self.assertEqual(len(w.wall.placeholders),count-2)
+   sizes=[]
+   for tile in w.wall.tiles:
+    surface=tile.player.surface
+    self.assertAlmostEqual(surface.height(),surface.width()*9/16,delta=1)
+    sizes.append(surface.size())
+   self.assertEqual(sizes[0],sizes[1])
+  first=w.wall.tiles[0]
+  QTest.mouseClick(first.player.surface,Qt.MouseButton.LeftButton)
+  self.assertIs(w.wall.focused_tile,first);self.assertEqual(len(w.wall.placeholders),0)
+  QTest.mouseClick(first.player.surface,Qt.MouseButton.LeftButton)
+  self.assertIsNone(w.wall.focused_tile);self.assertEqual(len(w.wall.placeholders),23)
+  w.wall.organization_input.setText('<阳光养老院>');w.wall.save_organization()
+  w.toggle_fullscreen();self.app.processEvents();w.wall.relayout()
+  self.assertTrue(w.wall.organization_header.isVisible())
+  self.assertEqual(w.wall.organization_header.textFormat(),Qt.TextFormat.PlainText)
+  self.assertAlmostEqual(first.player.surface.height(),first.player.surface.width()*9/16,delta=1)
+  again=self.window()
+  self.assertEqual(again.wall.organization_input.text(),'<阳光养老院>')
+  w.wall.organization_input.clear();w.wall.save_organization()
+  self.assertFalse(w.wall.organization_header.isVisible())
