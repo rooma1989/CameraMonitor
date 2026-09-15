@@ -13,8 +13,8 @@ def wall_rectangles(count, width, height, featured=True):
     if count <= 0:return []
     if count == 1:return [(0,0,width,height)]
     # Bottom columns align with the main view's vertical edge.
-    presets = {6:(3,2,[2]), 9:(4,2,[2,2]), 10:(4,2,[2,3]),
-               12:(4,2,[3,4]), 15:(4,2,[3,3])}
+    presets = {6:(3,2,[2]), 9:(4,2,[2,2]), 10:(5,3,[2,2]),
+               12:(5,2,[2,2,2]), 15:(4,2,[3,3])}
     if featured and count in presets:
         bottom_columns, main_columns, right_rows = presets[count]
         main_width = width*main_columns//bottom_columns
