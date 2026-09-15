@@ -1,0 +1,37 @@
+# Camera Monitor · Windows 11 64 位
+
+## 使用成品
+
+将打包生成的 CameraMonitor.exe 复制到目标电脑，双击启动，无需安装 Python。
+首次启动会解压内置组件，可能稍慢。请等待主窗口出现。
+
+- 电脑与摄像头连接到同一局域网，点击“搜索设备”。
+- 若 Windows 防火墙询问网络权限，允许此程序访问你信任的专用网络；不需要关闭防火墙。
+- 双击设备直接尝试连接；需要认证时，在连接设置中输入账号密码。
+- 记住密码使用当前 Windows 用户的凭据管理器；不会随 exe 带入其他电脑。
+- 视频中断后，每次等待 3 秒重试；停止按钮可取消。
+
+本版目标为 Windows 11 x64（Intel / AMD）。当前尚未完成 Windows 实机验收。
+未配置 Windows 代码签名，可能显示未知发布者提示。遵循所在电脑的安全策略。
+
+## 在 Windows 生成 exe
+
+编译电脑需先安装 Python 3.12 64 位（x64）及 Python Launcher，并能联网下载依赖。
+将本项目源代码复制到 Windows，双击根目录 build-windows.bat。
+脚本会安装依赖、运行测试、打包并检查 exe 的 x64 格式。
+成功后成品位于 dist-win/CameraMonitor.exe，仅需把这个 exe 发给使用者。
+
+发布前请在 Windows 11 实测：搜索摄像头、双击连接、多个画面播放、
+记住密码后重新打开软件、断流后重连、停止和关闭窗口。
+格式检查与自动测试不能代替这些实机验收。
+
+## GitHub 云端编译
+
+仓库已包含 `.github/workflows/windows-exe.yml`。上传源代码到 main 分支会触发编译，
+也可在仓库 Actions → Build Windows x64 EXE → Run workflow 手动启动。
+流程使用 Windows 云端环境和 Python 3.12 x64，自动运行测试、打包、
+检查 exe 架构以及启动主窗口，确认视频解码和系统密码存储组件能加载。
+
+成功后，在该次运行页面的 Artifacts 中下载 `CameraMonitor-Windows11-x64`，
+解压后运行 `CameraMonitor.exe`。下载包保留 14 天，可重新运行流程生成。
+云端无法访问你的内网摄像头，真实搜索、播放和密码保存仍需在目标电脑验收。

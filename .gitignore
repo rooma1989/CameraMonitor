@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+artifacts/
+.venv-win/
+build/
+dist/
+build-win/
+dist-win/
+releases/
+*.key
