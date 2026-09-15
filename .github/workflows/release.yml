@@ -1,0 +1,61 @@
+name: Publish desktop release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Install and test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python -c "import platform; assert platform.machine() == 'arm64'"
+          python -m pip install -r requirements.txt -r packaging/requirements-build.txt
+          python -m unittest discover -s tests -v
+      - name: Build Apple Silicon application
+        run: |
+          python -m PyInstaller --noconfirm --clean packaging/CameraMonitor.spec
+          codesign --verify --deep --strict 'dist/Camera Monitor.app'
+          lipo -verify_arch arm64 'dist/Camera Monitor.app/Contents/MacOS/CameraMonitor'
+          python packaging/smoke-macos-app.py 'dist/Camera Monitor.app'
+      - name: Prepare Apple Silicon download
+        run: |
+          mkdir -p release-files mac-package
+          ditto 'dist/Camera Monitor.app' 'mac-package/Camera Monitor.app'
+          cp packaging/macOS使用说明.md mac-package/使用说明.md
+          printf 'Commit: %s\nTarget: macOS 14+ Apple Silicon arm64\n' "$GITHUB_SHA" > mac-package/BUILD.txt
+          ditto -c -k --sequesterRsrc mac-package release-files/CameraMonitor-macOS-AppleSilicon.zip
+      - name: Fetch verified Windows build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 34934424302 -n CameraMonitor-Windows11-x64 -D windows-package
+          python packaging/verify-windows-exe.py windows-package/CameraMonitor.exe
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          p = Path('windows-package')
+          assert 'a201eebcdf6b6dedb1b2f6f820c6c17d9944df9b' in (p/'BUILD.txt').read_text(encoding='utf-8-sig')
+          assert hashlib.sha256((p/'CameraMonitor.exe').read_bytes()).hexdigest() == (p/'SHA256SUMS.txt').read_text(encoding='utf-8-sig').split()[0]
+          PY
+          (cd windows-package && zip -r ../release-files/CameraMonitor-Windows11-x64.zip .)
+      - name: Publish both downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd release-files && shasum -a 256 *.zip > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" release-files/* --verify-tag --title "Camera Monitor $GITHUB_REF_NAME · Windows / Apple 芯片 Mac" --notes-file packaging/RELEASE.md
