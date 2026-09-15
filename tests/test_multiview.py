@@ -42,7 +42,7 @@ class MultiViewTests(unittest.TestCase):
   self.assertEqual(p.password.text(),'')
   self.assertFalse(p.timer.isActive())
 
- def test_auto_layout_uses_source_ratios_without_empty_slots(self):
+ def test_auto_layout_stretches_sources_into_equal_slots(self):
   from PySide6.QtGui import QImage
   w=self.window();w.resize(1400,850);w.show()
   for ip in ('a','b'):w.add_device(Device(ip))
@@ -51,8 +51,10 @@ class MultiViewTests(unittest.TestCase):
   b.player.surface.show_frame(QImage(1280,720,QImage.Format.Format_RGB32))
   self.app.processEvents();w.relayout()
   self.assertEqual(len(w.placeholders),0)
-  self.assertAlmostEqual(a.player.surface.width()/a.player.surface.height(),704/576,delta=.02)
-  self.assertAlmostEqual(b.player.surface.width()/b.player.surface.height(),1280/720,delta=.02)
+  self.assertTrue(a.player.surface.stretch)
+  self.assertEqual(a.player.surface.pixmap().size(),a.player.surface.size())
+  self.assertEqual(b.player.surface.pixmap().size(),b.player.surface.size())
+  self.assertAlmostEqual(a.width(),b.width(),delta=2)
   self.assertAlmostEqual(a.player.surface.height(),b.player.surface.height(),delta=2)
   w.toggle_focus(a);self.assertFalse(b.isVisible())
   w.toggle_focus(a);self.assertTrue(b.isVisible())

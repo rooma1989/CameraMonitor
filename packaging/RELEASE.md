@@ -1,18 +1,14 @@
-## Camera Monitor
+## 监控墙与纯画面全屏
 
-轻量的跨品牌 RTSP 内网监控播放器，支持 Windows 和 Apple 芯片 Mac。
+- 新增 6 / 9 / 10 / 12 / 15 路一大多小布局，最多 15 台摄像头。
+- 画面完整拉伸铺满；环绕布局优先边缘对齐，部分窗口比例略有变化。
+- 拖动交换画面位置和主画面，顺序保存在本机。
+- F11 全屏隐藏所有侧栏、顶部和按钮，Esc 返回；全屏保留叠加名称，可在设置中选择颜色与四角位置。
+- 批量连接账号密码，支持选择设备及系统安全保存。正在播放的设备在下次手动连接时使用新凭据。
+- 保留 TCP / UDP 选择和固定 3 秒自动重连。
 
-- 搜索 ONVIF / 大华兼容摄像头，多画面实时预览。
-- 自定义位置名称，系统安全存储记住密码。
-- TCP / UDP 传输切换，断线每次等待 3 秒自动重连。
+Windows 11 x64：解压运行 CameraMonitor.exe。
+macOS 14+ Apple M 系列：解压将 Camera Monitor.app 拖入应用程序。
+两个版本均无需 Python；Mac 尚未经过 Apple 公证，首次打开方法见 README。
 
-### 下载与使用
-
-- **Windows 11 x64**：下载 CameraMonitor-Windows11-x64.zip，解压后运行 CameraMonitor.exe。
-- **macOS 14+ / M 系列芯片**：下载 CameraMonitor-macOS-AppleSilicon.zip，解压后将 Camera Monitor.app 拖入应用程序。
-- 均无需安装 Python。首次运行允许局域网访问。
-- Mac 版未经过 Apple 公证；若系统拦截，请确认来源后按 README 中的 Apple 官方说明允许打开。
-
-当前支持 RTSP 视频预览，暂不支持 RTMP、音频及录像。
-
-Windows 已完成云端构建、启动检查及用户实机播放验证；Mac 已完成 arm64 架构、应用完整性及启动检查。
+布局已通过模拟多画面验证；15 台真实摄像头的并发性能取决于电脑、视频码率和局域网环境，尚未进行 15 台实机同时播放验收。

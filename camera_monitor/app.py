@@ -3,7 +3,8 @@ from .choices import ChoiceButton as QComboBox
 
 import sys
 import threading
-from PySide6.QtCore import QThread, Signal, Qt, QTimer
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent
+from PySide6.QtGui import QShortcut, QKeySequence
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QBoxLayout,
     QAbstractItemView, QPlainTextEdit, QProgressBar, QSplitter, QFrame, QScrollArea, QStackedWidget, QSizePolicy)
@@ -41,12 +42,15 @@ class Window(QMainWindow):
         self.players = []
         self.wall = None
         self.current_settings = None
+        self.batch_panel = None
+        self.session_credentials = {}
+        self.presentation = False
         self.setWindowTitle('Camera Monitor · 内网监控中心')
         self.resize(1586, 960)
         self.setMinimumSize(1100, 720)
         root = QWidget()
         self.setCentralWidget(root)
-        layout = QVBoxLayout(root)
+        layout = self.root_layout = QVBoxLayout(root)
         layout.setContentsMargins(20,20,20,20)
         layout.setSpacing(12)
         header=QHBoxLayout()
@@ -57,9 +61,9 @@ class Window(QMainWindow):
         header.addWidget(badge)
         title.hide();badge.hide()
         layout.addLayout(header)
-        split=QSplitter(Qt.Orientation.Horizontal)
+        split=self.split=QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(split,1)
-        sidebar=QWidget();sidebar.setMinimumWidth(215);sidebar.setMaximumWidth(255)
+        sidebar=self.sidebar=QWidget();sidebar.setMinimumWidth(215);sidebar.setMaximumWidth(255)
         side=QVBoxLayout(sidebar);side.setContentsMargins(0,0,12,0);side.setSpacing(10)
         label=QLabel('设备');label.setStyleSheet('font-size:23px;font-weight:700;');side.addWidget(label)
         self.device_filter=QLineEdit();self.device_filter.setPlaceholderText('搜索设备名称或 IP')
@@ -89,6 +93,8 @@ class Window(QMainWindow):
         self.play.hide()
         self.copy=QPushButton('复制 IP');self.copy.setEnabled(False);self.copy.clicked.connect(self.copy_ip)
 
+        self.batch_button=QPushButton('批量账号密码');self.batch_button.clicked.connect(self.show_batch_settings)
+        side.addWidget(self.batch_button)
         self.detail_toggle=QPushButton('网络与设备详情');self.detail_toggle.setCheckable(True)
         side.addWidget(self.detail_toggle)
         self.diagnostics=QWidget();diagnostic_layout=QVBoxLayout(self.diagnostics)
@@ -101,7 +107,7 @@ class Window(QMainWindow):
         self.diagnostics.hide();side.addWidget(self.diagnostics)
         self.detail_toggle.toggled.connect(self.diagnostics.setVisible)
         split.addWidget(sidebar)
-        workspace=QWidget();work=QVBoxLayout(workspace);work.setContentsMargins(0,0,0,0)
+        workspace=QWidget();work=self.work_layout=QVBoxLayout(workspace);work.setContentsMargins(0,0,0,0)
         self.wall=MultiView([],self,embedded=True,device_names=self.device_names)
         self.wall.playing.connect(self.video_verified)
         self.wall.device_status.connect(self.update_device_status)
@@ -142,9 +148,14 @@ class Window(QMainWindow):
             QProgressBar::chunk { background:#2463eb; }
             QSplitter::handle { background:#dce4ee; width:1px; }
         ''')
+        self.escape_shortcut=QShortcut(QKeySequence('Escape'),self)
+        self.escape_shortcut.activated.connect(self.exit_fullscreen)
+        self.fullscreen_shortcut=QShortcut(QKeySequence('F11'),self)
+        self.fullscreen_shortcut.activated.connect(self.toggle_fullscreen)
         self.refresh_networks()
 
     def show_settings(self, player):
+        if self.presentation:return
         if self.settings_stack.indexOf(player)<0:
             player.setParent(self.settings_stack,Qt.WindowType.Widget)
             player.setMinimumSize(0,0)
@@ -177,8 +188,58 @@ class Window(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self,'settings_panel'):self.position_overlay()
 
+    def set_presentation(self, enabled):
+        self.presentation=enabled
+        if enabled:self.close_settings()
+        self.sidebar.setVisible(not enabled);self.settings_tab.setVisible(not enabled)
+        self.root_layout.setContentsMargins(*((0,0,0,0) if enabled else (20,20,20,20)))
+        self.root_layout.setSpacing(0 if enabled else 12)
+        self.work_layout.setContentsMargins(*((0,0,0,0) if enabled else (0,0,42,0)))
+        self.wall.set_presentation(enabled)
+
     def toggle_fullscreen(self):
-        self.showNormal() if self.isFullScreen() else self.showFullScreen()
+        if self.presentation:self.exit_fullscreen();return
+        self.was_maximized=self.isMaximized()
+        self.set_presentation(True);self.showFullScreen()
+
+    def exit_fullscreen(self):
+        if not self.presentation:return
+        self.set_presentation(False)
+        self.showMaximized() if getattr(self,'was_maximized',False) else self.showNormal()
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if event.type()==QEvent.Type.WindowStateChange and hasattr(self,'wall') and self.wall:
+            if self.isFullScreen() and not self.presentation:self.set_presentation(True)
+            elif not self.isFullScreen() and self.presentation:self.set_presentation(False)
+
+    def show_batch_settings(self):
+        from .batch_settings import BatchSettings
+        devices=dict(self.devices)
+        devices.update({t.player.device.ip:t.player.device for t in self.wall.tiles})
+        if not devices:self.status.setText('请先搜索或添加设备。');return
+        if self.batch_panel is not None:
+            self.settings_stack.removeWidget(self.batch_panel);self.batch_panel.deleteLater()
+        self.close_settings()
+        self.batch_panel=BatchSettings(list(devices.values()),self.device_names,self.apply_batch_credentials)
+        self.settings_stack.addWidget(self.batch_panel);self.settings_stack.setCurrentWidget(self.batch_panel)
+        self.position_overlay();self.settings_panel.show();self.settings_panel.raise_()
+
+    def apply_batch_credentials(self, ips, username, password, remember):
+        from .credentials import CredentialError
+        count=0;failed=[]
+        known=set(self.devices)|{t.player.device.ip for t in self.wall.tiles}
+        for ip in dict.fromkeys(ips):
+            if ip not in known:failed.append(ip);continue
+            if remember:
+                try:self.wall.credential_store.save(ip,username,password)
+                except CredentialError:failed.append(ip);continue
+            self.session_credentials[ip]=(username,password,remember)
+            for tile in self.wall.tiles:
+                if tile.player.device.ip==ip:
+                    tile.player.set_connection_credentials(username,password,remember)
+            count+=1
+        return count,failed
 
     def filter_devices(self,text):
         if not hasattr(self,'table'):return
@@ -202,6 +263,7 @@ class Window(QMainWindow):
             player.deleteLater()
 
     def close_settings(self):
+        if self.batch_panel:self.batch_panel.password.clear()
         self.settings_panel.hide()
         if self.current_settings:self.current_settings.hide()
         self.current_settings=None
@@ -247,6 +309,7 @@ class Window(QMainWindow):
         self.worker.start()
 
     def refresh_device_name(self, ip, name):
+        if self.wall is None:return
         for row in range(self.table.rowCount()):
             if self.table.item(row, 0).text() == ip:
                 self.table.setCellText(row, 1, self.device_names.display(self.devices[ip]))
@@ -295,7 +358,9 @@ class Window(QMainWindow):
         tile=next((t for t in self.wall.tiles if t.player.device.ip==device.ip),None)
         if tile is None:
             if not self.wall.add_device(device):return
-            tile=self.wall.tiles[-1]
+            tile=next(t for t in self.wall.tiles if t.player.device.ip==device.ip)
+            if device.ip in self.session_credentials:
+                tile.player.set_connection_credentials(*self.session_credentials[device.ip])
         if not force_settings and not tile.player.busy():
             tile.player.connect_camera()
         else:self.show_settings(tile.player)
@@ -357,6 +422,8 @@ class Window(QMainWindow):
             event.ignore()
             QTimer.singleShot(200, self.close)
             return
+        self.session_credentials.clear()
+        if self.batch_panel:self.batch_panel.password.clear()
         event.accept()
 
 

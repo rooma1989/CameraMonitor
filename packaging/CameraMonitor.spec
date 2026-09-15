@@ -17,9 +17,9 @@ exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='CameraMonitor',
     target_arch='arm64',codesign_identity=None,entitlements_file=None)
 coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='CameraMonitor')
 app=BUNDLE(coll,name='Camera Monitor.app',bundle_identifier='com.cameramonitor.desktop',
-    version='0.3.1',info_plist={
+    version='0.4.0',info_plist={
         'CFBundleDisplayName':'Camera Monitor',
-        'CFBundleShortVersionString':'0.3.1',
+        'CFBundleShortVersionString':'0.4.0',
         'LSMinimumSystemVersion':'14.0',
         'NSHighResolutionCapable':True,
         'NSLocalNetworkUsageDescription':'搜索并连接同一局域网中的摄像头，显示实时监控画面。',

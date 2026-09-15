@@ -146,7 +146,12 @@ class VideoSurface(QLabel):
         self._image = None
         self.aspect_ratio = 16/9
         self.fill = False
+        self.stretch = False
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+
+    def set_stretch(self, stretch):
+        self.stretch = stretch
+        if self._image is not None:self.show_frame(self._image)
 
     def set_fill(self, fill):
         self.fill = fill
@@ -167,8 +172,9 @@ class VideoSurface(QLabel):
         self._image = image
         self.setStyleSheet('background: transparent; color: #64748b;')
         mode = Qt.AspectRatioMode.KeepAspectRatioByExpanding if self.fill else Qt.AspectRatioMode.KeepAspectRatio
+        if self.stretch:mode = Qt.AspectRatioMode.IgnoreAspectRatio
         pixmap = QPixmap.fromImage(image).scaled(self.size(), mode, Qt.TransformationMode.SmoothTransformation)
-        if self.fill:
+        if self.fill and not self.stretch:
             pixmap = pixmap.copy((pixmap.width()-self.width())//2, (pixmap.height()-self.height())//2, self.width(), self.height())
         self.setPixmap(pixmap)
 
@@ -195,6 +201,7 @@ class PlayerWindow(QDialog):
         self.device_names = device_names if device_names is not None else DeviceNames()
         self.connection_options = connection_options if connection_options is not None else ConnectionOptions()
         self.credential_store = credential_store or CredentialStore()
+        self.pending_credentials = None
         self._remembered = None
         self._verified_credentials = None
         self._hide_when_ready = False
@@ -227,6 +234,21 @@ class PlayerWindow(QDialog):
         self.name_note = QLabel('名称保存在这台电脑，清空后恢复设备名称。')
         self.name_note.setWordWrap(True)
         layout.addWidget(self.name_note)
+        appearance = QHBoxLayout()
+        appearance.addWidget(QLabel('全屏名称'))
+        self.name_color = QComboBox()
+        for label, value in zip(('白色','黄色','绿色','蓝色','红色'), self.device_names.COLORS):
+            self.name_color.addItem(label, value)
+        self.name_corner = QComboBox()
+        for label, value in zip(('左上角','右上角','左下角','右下角'), self.device_names.CORNERS):
+            self.name_corner.addItem(label, value)
+        color, corner = self.device_names.appearance(device.ip)
+        self.name_color.setCurrentIndex(self.device_names.COLORS.index(color))
+        self.name_corner.setCurrentIndex(self.device_names.CORNERS.index(corner))
+        self.name_color.currentIndexChanged.connect(self.save_name_appearance)
+        self.name_corner.currentIndexChanged.connect(self.save_name_appearance)
+        appearance.addWidget(self.name_color);appearance.addWidget(self.name_corner)
+        layout.addLayout(appearance)
         self.device_names.changed.connect(self.refresh_name)
         form = QHBoxLayout()
         self.username = QLineEdit()
@@ -321,6 +343,22 @@ class PlayerWindow(QDialog):
             self.credential_note.setText(str(exc))
         self.remember.toggled.connect(self.remember_changed)
 
+    def save_name_appearance(self):
+        try:
+            self.device_names.save_appearance(self.device.ip, self.name_color.currentData(), self.name_corner.currentData())
+            self.name_note.setText('全屏名称样式已保存。')
+        except (OSError, ValueError):
+            self.name_note.setText('名称样式未保存，请重试。')
+
+    def set_connection_credentials(self, username, password, remember):
+        if self.busy():
+            self.pending_credentials = (username, password, remember)
+            return
+        self.pending_credentials = None
+        self.username.setText(username);self.password.setText(password)
+        self.remember.blockSignals(True);self.remember.setChecked(remember);self.remember.blockSignals(False)
+        self._verified_credentials = None
+
     def copy_diagnostics(self):
         QApplication.clipboard().setText(f'设备 IP：{self.device.ip}\n传输：{self.transport.currentData().upper()}；连接超时5秒；读取超时4秒；重试间隔3秒\n' + self.connection_diagnostics.toPlainText())
 
@@ -381,6 +419,8 @@ class PlayerWindow(QDialog):
 
     def connect_camera(self):
         if self.busy(): return
+        if self.pending_credentials is not None:
+            self.set_connection_credentials(*self.pending_credentials)
         self.stopping = False
         self._verified_credentials = None
         self._hide_when_ready = self.hosted and self.isVisible()
@@ -463,6 +503,7 @@ class PlayerWindow(QDialog):
                     self.settings_hidden.emit()
 
     def save_credentials(self):
+        if self.pending_credentials is not None:return True
         current = (self.username.text(), self.password.text())
         if not self.remember.isChecked() or not any(current): return True
         if current != self._verified_credentials: return False
@@ -522,6 +563,7 @@ class PlayerWindow(QDialog):
             return
         self.password.clear()
         self._remembered=None
+        self.pending_credentials = None
         self.manual.clear()
         self.profiles.clear()
         self.timer.stop()

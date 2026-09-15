@@ -32,3 +32,35 @@ class DeviceNames(QObject):
             self.settings.setValue(key, previous) if previous else self.settings.remove(key)
             raise OSError('Could not save device name')
         self.changed.emit(ip, name)
+
+    appearance_changed = Signal(str)
+    COLORS = ('#ffffff', '#ffff00', '#00ff88', '#00ccff', '#ff6666')
+    CORNERS = ('top-left', 'top-right', 'bottom-left', 'bottom-right')
+
+    def appearance(self, ip):
+        key = 'appearance/' + quote(ip, safe='') + '/'
+        color = self.settings.value(key + 'color', '#ffffff')
+        corner = self.settings.value(key + 'corner', 'top-left')
+        return (color if color in self.COLORS else '#ffffff',
+                corner if corner in self.CORNERS else 'top-left')
+
+    def save_appearance(self, ip, color, corner):
+        if color not in self.COLORS or corner not in self.CORNERS:
+            raise ValueError('Invalid appearance')
+        key = 'appearance/' + quote(ip, safe='') + '/'
+        self.settings.setValue(key + 'color', color)
+        self.settings.setValue(key + 'corner', corner)
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            raise OSError('Could not save appearance')
+        self.appearance_changed.emit(ip)
+
+    def order(self):
+        value = self.settings.value('monitor/order', [])
+        return value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
+
+    def save_order(self, ips):
+        self.settings.setValue('monitor/order', list(ips))
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            raise OSError('Could not save order')

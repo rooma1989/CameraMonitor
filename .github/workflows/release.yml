@@ -5,7 +5,10 @@ on:
 permissions:
   contents: read
 jobs:
+  windows:
+    uses: ./.github/workflows/windows-exe.yml
   release:
+    needs: windows
     runs-on: macos-14
     timeout-minutes: 20
     permissions:
@@ -43,13 +46,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh run download 34934424302 -n CameraMonitor-Windows11-x64 -D windows-package
+          gh run download "$GITHUB_RUN_ID" -n CameraMonitor-Windows11-x64 -D windows-package
           python packaging/verify-windows-exe.py windows-package/CameraMonitor.exe
           python - <<'PY'
-          import hashlib
+          import hashlib, os
           from pathlib import Path
           p = Path('windows-package')
-          assert 'a201eebcdf6b6dedb1b2f6f820c6c17d9944df9b' in (p/'BUILD.txt').read_text(encoding='utf-8-sig')
+          assert os.environ['GITHUB_SHA'] in (p/'BUILD.txt').read_text(encoding='utf-8-sig')
           assert hashlib.sha256((p/'CameraMonitor.exe').read_bytes()).hexdigest() == (p/'SHA256SUMS.txt').read_text(encoding='utf-8-sig').split()[0]
           PY
           (cd windows-package && zip -r ../release-files/CameraMonitor-Windows11-x64.zip .)

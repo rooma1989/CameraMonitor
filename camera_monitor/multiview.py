@@ -1,11 +1,13 @@
 """Independent camera players arranged in a 4/9 tile monitor wall."""
-from PySide6.QtCore import Qt,QTimer,Signal,QEvent
+from PySide6.QtCore import Qt,QTimer,Signal,QEvent,QMimeData
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (QWidget,QDialog,QVBoxLayout,QHBoxLayout,QGridLayout,
     QLabel,QPushButton,QFrame,QScrollArea,QApplication,QMenu)
 from .choices import ChoiceButton
 from .playback import PlayerWindow
 from .credentials import CredentialStore
 from .device_names import DeviceNames
+from .wall_layout import wall_rectangles
 
 
 class CameraTile(QFrame):
@@ -18,6 +20,8 @@ class CameraTile(QFrame):
         self.setObjectName('cameraTile')
         self.setStyleSheet('QFrame#cameraTile {background:white; border:1px solid #dce4ed; border-radius:6px;}')
         self.monitor=parent
+        self.setAcceptDrops(True)
+        self.drag_start=None
         self.player=PlayerWindow(device,self,credential_store=credential_store,device_names=parent.device_names)
         self.player.hosted=True
         self.player.credentials_required.connect(self.show_settings)
@@ -26,7 +30,8 @@ class CameraTile(QFrame):
         self.player.layout().removeWidget(self.player.surface)
         self.player.surface.setParent(self)
         self.player.surface.setMinimumSize(1,1)
-        self.player.surface.set_fill(False)
+        self.player.surface.set_stretch(True)
+        self.player.surface.installEventFilter(self)
         self.player.surface.aspect_changed.connect(lambda _:self.monitor.schedule_layout())
         self.player.surface.activated.connect(lambda:self.monitor.toggle_focus(self))
         self.title=QLabel(f'{parent.device_names.display(device)} · {device.ip}',self)
@@ -34,6 +39,11 @@ class CameraTile(QFrame):
         parent.device_names.changed.connect(self.refresh_name)
         self.title.setStyleSheet('background:transparent; font-weight:600; font-size:13px; padding-left:12px;')
         self.title.setToolTip(self.title.text())
+        self.name_overlay=QLabel(self.player.surface)
+        self.name_overlay.setTextFormat(Qt.TextFormat.PlainText)
+        self.name_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.name_overlay.hide()
+        parent.device_names.appearance_changed.connect(self.refresh_overlay)
         self.status=QLabel('待连接',self)
         self.status.setStyleSheet('background:transparent; color:#8191a5; font-size:12px;')
         self.status.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
@@ -62,11 +72,13 @@ class CameraTile(QFrame):
         self.control_timer=QTimer(self);self.control_timer.setInterval(200)
         self.control_timer.timeout.connect(self.sync_controls);self.control_timer.start()
         self.sync_controls()
+        self.refresh_overlay()
 
     def refresh_name(self, ip, name):
         if ip == self.player.device.ip:
             self.title.setText(f'{self.monitor.device_names.display(self.player.device)} · {ip}')
             self.title.setToolTip(self.title.text())
+            self.refresh_overlay()
 
     def update_status(self,text):
         live=text.startswith('正在播放') or text.startswith('画面正在播放')
@@ -76,21 +88,60 @@ class CameraTile(QFrame):
         self.status.setToolTip(text)
         self.monitor.device_status.emit(self.player.device.ip,summary)
 
-    def resizeEvent(self,event):
-        super().resizeEvent(event)
-        self.title.setGeometry(0,0,max(1,self.width()-75),self.HEADER)
-        self.status.setGeometry(max(0,self.width()-75),0,65,self.HEADER)
-        self.player.surface.setGeometry(1,self.HEADER,max(1,self.width()-2),max(1,self.height()-self.HEADER-1))
+    def refresh_overlay(self, ip=None):
+        if ip is not None and ip != self.player.device.ip:return
+        color, self.name_corner = self.monitor.device_names.appearance(self.player.device.ip)
+        self.name_overlay.setText(self.monitor.device_names.display(self.player.device))
+        self.name_overlay.setStyleSheet(f'color:{color};background:rgba(0,0,0,95);font-size:16px;font-weight:600;padding:4px 8px;border-radius:3px;')
+        self.layout_contents()
+
+    def layout_contents(self):
+        if not hasattr(self,'controls'):return
+        fullscreen=self.monitor.presentation
+        header=0 if fullscreen else self.HEADER
+        self.title.setVisible(not fullscreen);self.status.setVisible(not fullscreen)
+        self.title.setGeometry(0,0,max(1,self.width()-75),header)
+        self.status.setGeometry(max(0,self.width()-75),0,65,header)
+        self.player.surface.setGeometry(0,header,self.width(),max(1,self.height()-header))
         width=min(self.player.surface.width(),350)
         self.controls.setGeometry(self.player.surface.width()-width,max(0,self.player.surface.height()-38),width,38)
+        self.name_overlay.setMaximumWidth(max(1,self.player.surface.width()-16))
+        self.name_overlay.adjustSize()
+        x=max(0,self.player.surface.width()-self.name_overlay.width()-8) if 'right' in self.name_corner else 8
+        y=max(0,self.player.surface.height()-self.name_overlay.height()-8) if 'bottom' in self.name_corner else 8
+        self.name_overlay.move(x,y);self.name_overlay.setVisible(fullscreen);self.name_overlay.raise_()
+        if fullscreen:self.controls.hide()
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event);self.layout_contents()
 
     def eventFilter(self,watched,event):
-        if event.type()==QEvent.Type.FocusIn:
+        if watched is self.player.surface:
+            if event.type()==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton:
+                self.drag_start=event.position().toPoint()
+            elif event.type()==QEvent.Type.MouseButtonRelease:
+                self.drag_start=None
+            elif event.type()==QEvent.Type.MouseMove and self.drag_start is not None and event.buttons() & Qt.MouseButton.LeftButton:
+                if (event.position().toPoint()-self.drag_start).manhattanLength() >= QApplication.startDragDistance():
+                    self.drag_start=None
+                    drag=QDrag(self);mime=QMimeData();mime.setData('application/x-camera-monitor-tile',b'move')
+                    drag.setMimeData(mime);drag.exec(Qt.DropAction.MoveAction);return True
+        if event.type()==QEvent.Type.FocusIn and not self.monitor.presentation:
             self.controls.show();self.controls.raise_()
         return super().eventFilter(watched,event)
 
+    def dragEnterEvent(self,event):
+        if event.source() in self.monitor.tiles and event.mimeData().hasFormat('application/x-camera-monitor-tile'):
+            event.acceptProposedAction()
+        else:event.ignore()
+
+    def dropEvent(self,event):
+        if self.monitor.swap_tiles(event.source(),self):event.acceptProposedAction()
+        else:event.ignore()
+
     def enterEvent(self,event):
-        self.controls.show();self.controls.raise_();super().enterEvent(event)
+        if not self.monitor.presentation:self.controls.show();self.controls.raise_()
+        super().enterEvent(event)
 
     def leaveEvent(self,event):
         if not self.controls.isAncestorOf(QApplication.focusWidget()):self.controls.hide()
@@ -138,7 +189,8 @@ class MultiView(QDialog):
         self.resize(1200,850)
         self.setMinimumSize(620,350) if embedded else self.setMinimumSize(820,600)
         self.credential_store=credential_store or CredentialStore()
-        self.capacity=9
+        self.capacity=15
+        self.presentation=False
         self.layout_mode="auto"
         self.focused_tile=None
         self.layout_timer=QTimer(self)
@@ -151,7 +203,9 @@ class MultiView(QDialog):
         heading=QLabel('多画面监控')
         heading.setStyleSheet('font-size:24px; font-weight:600;')
         if embedded:heading.setText('实时监控')
-        toolbar=QHBoxLayout()
+        self.toolbar_widget=QWidget()
+        toolbar=QHBoxLayout(self.toolbar_widget)
+        toolbar.setContentsMargins(0,0,0,0)
         toolbar.addWidget(heading)
         toolbar.addStretch()
         self.auto=QPushButton('自动')
@@ -171,6 +225,11 @@ class MultiView(QDialog):
         self.nine.setMinimumWidth(90)
         self.nine.clicked.connect(lambda:self.change_layout(9))
         toolbar.addWidget(self.nine)
+        self.featured=ChoiceButton()
+        self.featured.addItem('一大多小 · 自动', 'auto')
+        for count in (6,9,10,12,15):self.featured.addItem(f'一大多小 · {count}路',count)
+        self.featured.currentIndexChanged.connect(lambda _:self.change_layout('featured'))
+        toolbar.addWidget(self.featured)
         self.display_mode=ChoiceButton()
         self.display_mode.addItems(['完整画面', '铺满（裁剪）'])
         self.display_mode.setToolTip('等比铺满会裁剪边缘；完整画面保留全部内容，可能留边。')
@@ -186,11 +245,13 @@ class MultiView(QDialog):
         self.fullscreen=QPushButton('全屏')
         self.fullscreen.clicked.connect(self.fullscreen_requested)
         toolbar.addWidget(self.fullscreen)
-        layout.addLayout(toolbar)
+        layout.addWidget(self.toolbar_widget)
         self.message=QLabel('每格独立播放；需要密码时打开该格的“连接设置”。')
         self.message.setWordWrap(True)
         self.message.hide()
-        scroll=QScrollArea()
+        scroll=self.scroll=QScrollArea()
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidgetResizable(True)
         self.canvas=WatchCanvas()
         self.canvas.resized.connect(self.schedule_layout)
@@ -199,7 +260,7 @@ class MultiView(QDialog):
         self.empty.setStyleSheet('color:#8191a5; font-size:16px;')
         scroll.setWidget(self.canvas)
         layout.addWidget(scroll,1)
-        self.hint=QLabel('双击画面放大 · 保持原始比例')
+        self.hint=QLabel('拖动交换画面 · 双击放大 · 全屏按 Esc 返回')
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.hint.setStyleSheet('color:#8191a5; font-size:13px; padding:12px;')
         layout.addWidget(self.hint)
@@ -213,7 +274,7 @@ class MultiView(QDialog):
         self.relayout()
 
     def update_display_mode(self):
-        for tile in self.tiles:tile.player.surface.set_fill(self.display_mode.currentIndex()==1)
+        for tile in self.tiles:tile.player.surface.set_stretch(True)
 
     def update_devices(self,devices):
         self.choice.clear()
@@ -232,15 +293,17 @@ class MultiView(QDialog):
             self.hint.setText('此摄像头已在监控画面中。')
             return False
         if len(self.tiles)>=self.capacity:
-            self.hint.setText('当前画面已满，请切换自动 / 9画面，或先移除一个画面。')
+            self.hint.setText('当前布局已满，请切换自动或更大布局。')
             return False
         tile=CameraTile(len(self.tiles)+1,device,self.credential_store,self)
         tile.setParent(self.canvas)
         tile.remove_requested.connect(self.remove_tile)
         tile.settings_requested.connect(self.settings_requested)
         tile.player.playing.connect(self.playing)
-        tile.player.surface.set_fill(self.display_mode.currentIndex()==1)
+        tile.player.surface.set_stretch(True)
         self.tiles.append(tile)
+        order=self.device_names.order()
+        self.tiles.sort(key=lambda t:order.index(t.player.device.ip) if t.player.device.ip in order else len(order))
         self.relayout()
         self.message.setText(f'已添加 {len(self.tiles)} 台摄像头。点击“全部连接”，或在每格单独连接。')
         return True
@@ -253,41 +316,44 @@ class MultiView(QDialog):
         self.empty.setGeometry(self.canvas.rect())
         self.empty.setVisible(not self.tiles)
         visible=[self.focused_tile] if self.focused_tile in self.tiles else list(self.tiles)
-        columns=1 if self.focused_tile in self.tiles else (3 if self.layout_mode==9 or (self.layout_mode=='auto' and len(visible)>4) else 2)
-        rows=[visible[i:i+columns] for i in range(0,len(visible),columns)]
-        gap=16; width=max(1,self.canvas.width());height=max(1,self.canvas.height())
-        y=0
-        for row in rows:
-            ratios=[t.player.surface.aspect_ratio for t in row]
-            available=max(60,(height-gap*(len(rows)-1))/max(1,len(rows))-CameraTile.HEADER-1)
-            video_height=max(1,int(min((width-gap*(len(row)-1)-2*len(row))/sum(ratios),available)))
-            x=0
-            for tile,ratio in zip(row,ratios):
-                w=round(video_height*ratio)+2
-                tile.setGeometry(x,y,w,video_height+CameraTile.HEADER+1)
-                tile.show()
-                tile.expand.setText('返回' if self.focused_tile is tile else '放大')
-                x+=w+gap
-            y+=video_height+CameraTile.HEADER+1+gap
+        width=max(1,self.canvas.width());height=max(1,self.canvas.height())
+        rects=wall_rectangles(len(visible),width,height,self.layout_mode in ('auto','featured'))
+        for tile,(x,y,w,h) in zip(visible,rects):
+            gap=1 if self.presentation else 4
+            tile.setGeometry(x,y,max(1,w-gap),max(1,h-gap))
+            tile.layout_contents();tile.show()
+            tile.expand.setText('返回' if self.focused_tile is tile else '放大')
         for tile in self.tiles:
             if tile not in visible:tile.hide()
         for button,mode in ((self.auto,'auto'),(self.four,4),(self.nine,9)):
             button.setStyleSheet('background:#2463eb;color:white;border:1px solid #2463eb;' if self.layout_mode==mode else '')
+
+    def set_presentation(self,enabled):
+        self.presentation=enabled
+        self.toolbar_widget.setVisible(not enabled);self.hint.setVisible(not enabled)
+        self.layout().setContentsMargins(*((0,0,0,0) if enabled else (9,9,9,9)))
+        self.layout().setSpacing(0 if enabled else 6)
+        self.relayout();self.schedule_layout()
+
+    def swap_tiles(self,source,target):
+        if self.closing or source not in self.tiles or target not in self.tiles or source is target:return False
+        a,b=self.tiles.index(source),self.tiles.index(target)
+        self.tiles[a],self.tiles[b]=self.tiles[b],self.tiles[a]
+        try:self.device_names.save_order([t.player.device.ip for t in self.tiles])
+        except OSError:self.hint.setText('顺序已调整，但未能保存到本机。')
+        self.relayout();return True
 
     def toggle_focus(self,tile):
         self.focused_tile=None if self.focused_tile is tile else tile
         self.relayout()
 
     def change_layout(self,capacity):
-        if capacity not in ('auto',4,9):return False
-        if capacity==4 and len(self.tiles)>4:
-            self.hint.setText('已有超过4路画面，请使用自动或9画面，或移除多余设备。')
-            return False
-        self.layout_mode=capacity
-        self.capacity=9 if capacity=='auto' else capacity
-        self.focused_tile=None
-        self.relayout()
-        return True
+        if capacity not in ('auto','featured',4,9):return False
+        limit=(self.featured.currentData() if self.featured.currentData()!='auto' else 15) if capacity=='featured' else (15 if capacity=='auto' else capacity)
+        if len(self.tiles)>limit:
+            self.hint.setText('已有画面数量超过所选布局，请先移除多余设备。');return False
+        self.layout_mode=capacity;self.capacity=limit
+        self.focused_tile=None;self.relayout();return True
 
     def remove_tile(self,tile):
         if self.closing:return
