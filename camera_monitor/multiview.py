@@ -171,6 +171,25 @@ class CameraTile(QFrame):
         return True
 
 
+class EmptySlot(QLabel):
+    def __init__(self,monitor):
+        super().__init__(monitor.canvas)
+        self.monitor=monitor
+        self.slot_index=0
+        self.setAcceptDrops(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet('background:#172333;color:#8293a8;border:1px solid #354255;')
+
+    def dragEnterEvent(self,event):
+        if event.source() in self.monitor.tiles and event.mimeData().hasFormat('application/x-camera-monitor-tile'):
+            event.acceptProposedAction()
+        else:event.ignore()
+
+    def dropEvent(self,event):
+        if self.monitor.move_tile(event.source(),self.slot_index):event.acceptProposedAction()
+        else:event.ignore()
+
+
 class WatchCanvas(QWidget):
     resized=Signal()
     def resizeEvent(self,event):
@@ -201,6 +220,8 @@ class MultiView(QDialog):
         self.layout_timer.setSingleShot(True)
         self.layout_timer.timeout.connect(self.relayout)
         self.tiles=[]
+        self.slots=[None]*25
+        self.saved_slots=self.device_names.slot_order()
         self.placeholders=[]
         self.closing=False
         layout=QVBoxLayout(self)
@@ -355,8 +376,10 @@ class MultiView(QDialog):
         tile.player.playing.connect(self.playing)
         tile.player.surface.set_stretch(True)
         self.tiles.append(tile)
-        order=self.device_names.order()
-        self.tiles.sort(key=lambda t:order.index(t.player.device.ip) if t.player.device.ip in order else len(order))
+        preferred=self.saved_slots.index(device.ip) if device.ip in self.saved_slots else -1
+        index=preferred if 0<=preferred<self.capacity and self.slots[preferred] is None else self.slots.index(None)
+        self.slots[index]=tile
+        self.tiles=[t for t in self.slots if t is not None]
         self.relayout()
         self.message.setText(f'已添加 {len(self.tiles)} 台摄像头。点击“全部连接”，或在每格单独连接。')
         return True
@@ -379,15 +402,16 @@ class MultiView(QDialog):
         while len(self.placeholders)>missing:
             placeholder=self.placeholders.pop();placeholder.hide();placeholder.deleteLater()
         while len(self.placeholders)<missing:
-            placeholder=QLabel(self.canvas)
-            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            placeholder.setStyleSheet('background:#172333;color:#8293a8;border:1px solid #354255;')
+            placeholder=EmptySlot(self)
             self.placeholders.append(placeholder)
-        for index,(placeholder,rect) in enumerate(zip(self.placeholders,rects[len(visible):]),len(visible)+1):
-            placeholder.setText(f'画面 {index:02d}\n暂无摄像头')
-            placeholder.setGeometry(*rect);placeholder.show()
-        for tile,(x,y,w,h) in zip(visible,rects):
-            tile.setGeometry(x,y,w,h)
+        empty_indices=[] if focused else [i for i in range(self.capacity) if self.slots[i] is None]
+        for placeholder,index in zip(self.placeholders,empty_indices):
+            placeholder.slot_index=index
+            placeholder.setText(f'画面 {index+1:02d}\n拖动摄像头到此处')
+            placeholder.setGeometry(*rects[index]);placeholder.show()
+        for tile in visible:
+            index=0 if focused else self.slots.index(tile)
+            tile.setGeometry(*rects[index])
             tile.layout_contents();tile.show()
             tile.expand.setText('返回' if self.focused_tile is tile else '放大')
         for tile in self.tiles:
@@ -405,13 +429,22 @@ class MultiView(QDialog):
         self.layout().setSpacing(0 if enabled else 6)
         self.relayout();self.schedule_layout()
 
+    def persist_slots(self):
+        self.saved_slots=[t.player.device.ip if t else '' for t in self.slots]
+        try:self.device_names.save_slot_order(self.saved_slots)
+        except OSError:self.hint.setText('位置已调整，但未能保存到本机。')
+
+    def move_tile(self,source,index):
+        if self.closing or source not in self.tiles or not 0<=index<self.capacity:return False
+        old=self.slots.index(source)
+        if old==index:return False
+        self.slots[old],self.slots[index]=self.slots[index],self.slots[old]
+        self.tiles=[t for t in self.slots if t is not None]
+        self.persist_slots();self.relayout();return True
+
     def swap_tiles(self,source,target):
-        if self.closing or source not in self.tiles or target not in self.tiles or source is target:return False
-        a,b=self.tiles.index(source),self.tiles.index(target)
-        self.tiles[a],self.tiles[b]=self.tiles[b],self.tiles[a]
-        try:self.device_names.save_order([t.player.device.ip for t in self.tiles])
-        except OSError:self.hint.setText('顺序已调整，但未能保存到本机。')
-        self.relayout();return True
+        if target not in self.tiles:return False
+        return self.move_tile(source,self.slots.index(target))
 
     def toggle_focus(self,tile):
         self.focused_tile=None if self.focused_tile is tile else tile
@@ -424,6 +457,12 @@ class MultiView(QDialog):
         limit=capacity
         if len(self.tiles)>limit:
             self.hint.setText('已有画面数量超过所选布局，请先移除多余设备。');return False
+        overflow=[t for t in self.slots[limit:] if t is not None]
+        if overflow:
+            self.slots[limit:]=[None]*(25-limit)
+            for tile in overflow:self.slots[self.slots.index(None)]=tile
+            self.tiles=[t for t in self.slots if t is not None]
+            self.persist_slots()
         self.layout_mode=capacity;self.capacity=limit
         self.featured.blockSignals(True)
         if capacity in (6,10,15):self.featured.setCurrentIndex((6,10,15).index(capacity))
@@ -438,7 +477,9 @@ class MultiView(QDialog):
             QTimer.singleShot(150,lambda:self.remove_tile(tile))
             return
         self.tile_removing.emit(tile.player)
+        self.slots[self.slots.index(tile)]=None
         self.tiles.remove(tile)
+        self.persist_slots()
         if self.focused_tile is tile:self.focused_tile=None
         tile.hide();tile.deleteLater()
         self.relayout()

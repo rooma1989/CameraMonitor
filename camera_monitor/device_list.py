@@ -4,8 +4,23 @@ Qt's synthesized AX table rows/columns can outlive their cells on macOS 26.
 Each device here is a standard accessible button containing plain labels.
 """
 from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QScrollArea
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QPalette
+from PySide6.QtWidgets import QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QScrollArea, QSizePolicy
+
+
+class ElidedLabel(QLabel):
+    """Keep the full cell value for selection/filtering; elide only its painting."""
+    def __init__(self):
+        super().__init__()
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(18)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setPen(self.palette().color(QPalette.ColorRole.WindowText))
+        text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight, self.contentsRect().width())
+        painter.drawText(self.contentsRect(), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
 
 
 class Cell:
@@ -18,7 +33,9 @@ class Cell:
     def setText(self, text):
         self.label.setText(text)
         self.label.setToolTip(text)
-        self.row.setAccessibleName(' · '.join(cell.text() for cell in self.row.cells))
+        full_text = ' · '.join(cell.text() for cell in self.row.cells)
+        self.row.setAccessibleName(full_text)
+        self.row.setToolTip(full_text)
 
 
 class DeviceRow(QPushButton):
@@ -28,34 +45,45 @@ class DeviceRow(QPushButton):
     def __init__(self, compact=False):
         super().__init__()
         self.setCheckable(True)
-        self.setMinimumHeight(170 if compact else 80)
+        if compact: self.setFixedHeight(78)
+        else: self.setMinimumHeight(80)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleDescription('点击选择摄像头，双击或按回车播放视频')
         self.setStyleSheet('''QPushButton {background:transparent; border:none; border-bottom:1px solid #e9eef5; border-radius:0; padding:8px;}
             QPushButton:checked {background:#e5efff; border-left:3px solid #2463eb;}
             QLabel {background:transparent; border:none;}''')
-        layout = QVBoxLayout(self) if compact else QHBoxLayout(self)
-        layout.setContentsMargins(10,5,10,5)
-        layout.setSpacing(4)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6 if compact else 10, 5, 6 if compact else 10, 5)
+        layout.setSpacing(7 if compact else 4)
         self.thumbnail_image = None
         self.thumbnail = QPushButton('待获取画面')
-        self.thumbnail.setFixedSize(128 if compact else 112, 72 if compact else 64)
-        self.thumbnail.setIconSize(QSize(124 if compact else 108, 68 if compact else 60))
+        self.thumbnail.setFixedSize(80 if compact else 112, 45 if compact else 64)
+        self.thumbnail.setIconSize(QSize(76 if compact else 108, 41 if compact else 60))
         self.thumbnail.setAccessibleName('设备缩略图，点击查看大图')
         self.thumbnail.setEnabled(False)
         self.thumbnail.clicked.connect(self.thumbnailClicked.emit)
-        layout.addWidget(self.thumbnail)
+        self.thumbnail.setStyleSheet('QPushButton {padding:0; border:0; border-radius:4px; background:#edf2f8; color:#64748b; font-size:11px;}')
+        layout.addWidget(self.thumbnail, 0, Qt.AlignmentFlag.AlignVCenter)
+        text_layout = QVBoxLayout() if compact else layout
+        if compact:
+            text_layout.setSpacing(0)
+            text_layout.setContentsMargins(0,0,0,0)
+            layout.addLayout(text_layout,1)
         self.cells=[]
         for _ in range(5):
-            label=QLabel()
+            label=ElidedLabel() if compact else QLabel()
             label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setWordWrap(True)
+            label.setWordWrap(not compact)
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            layout.addWidget(label,1)
+            if not compact: layout.addWidget(label,1)
             self.cells.append(Cell(label,self))
         if compact:
+            for index in (1, 0, 4): text_layout.addWidget(self.cells[index].label)
             self.cells[2].label.hide()
             self.cells[3].label.hide()
-            self.cells[0].label.setStyleSheet("font-weight:700; font-size:14px;")
+            self.cells[1].label.setStyleSheet("font-weight:600; font-size:12px;")
+            self.cells[0].label.setStyleSheet("font-size:11px; color:#475569;")
             self.cells[4].label.setStyleSheet("font-size:11px; color:#64748b;")
 
     def set_thumbnail(self, image, status):

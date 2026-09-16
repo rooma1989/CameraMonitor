@@ -18,6 +18,7 @@ def smoke_test(result_path):
         assert CredentialStore().vault().priority > 0
     app = QApplication([])
     window = Window()
+    assert not window.windowIcon().isNull(), "Bundled application icon missing"
     window.show()
     QTimer.singleShot(1000, window.close)
     QTimer.singleShot(3000, app.quit)

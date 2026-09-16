@@ -64,3 +64,15 @@ class DeviceNames(QObject):
         self.settings.sync()
         if self.settings.status() != QSettings.Status.NoError:
             raise OSError('Could not save order')
+
+    def slot_order(self):
+        value=self.settings.value('monitor/slots',None)
+        if value is None:return self.order()
+        return value if isinstance(value,list) else ([value] if isinstance(value,str) else [])
+
+    def save_slot_order(self,ips):
+        self.settings.setValue('monitor/slots',list(ips))
+        self.settings.setValue('monitor/order',[ip for ip in ips if ip])
+        self.settings.sync()
+        if self.settings.status()!=QSettings.Status.NoError:
+            raise OSError('Could not save slot positions')

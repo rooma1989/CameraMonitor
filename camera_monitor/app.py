@@ -4,7 +4,8 @@ from .choices import ChoiceButton as QComboBox
 import sys
 import threading
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent
-from PySide6.QtGui import QShortcut, QKeySequence
+from PySide6.QtGui import QShortcut, QKeySequence, QIcon
+from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QBoxLayout,
     QAbstractItemView, QPlainTextEdit, QProgressBar, QSplitter, QFrame, QScrollArea, QStackedWidget, QSizePolicy)
@@ -53,6 +54,7 @@ class Window(QMainWindow):
         self.unlock_prompt_active=False
         self.authorized_exit=False
         self.setWindowTitle('Camera Monitor · 内网监控中心')
+        self.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'app-icon.png')))
         self.resize(1586, 960)
         self.setMinimumSize(1100, 720)
         root = QWidget()
@@ -520,6 +522,7 @@ class Window(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName('Camera Monitor')
+    app.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'app-icon.png')))
     app.setStyle('Fusion')
     window = Window()
     window.show()

@@ -47,3 +47,28 @@ class DeviceListTests(unittest.TestCase):
   choice.clear()
   self.assertIsNone(choice.currentData())
   choice.close()
+
+ def test_compact_rows_fit_narrow_sidebar_with_full_cell_values(self):
+  widget=DeviceList(compact=True)
+  widget.resize(191,400)
+  full_name='仓库东侧非常长的摄像头名称不能丢失'
+  for row in range(5):
+   widget.insertRow(row)
+   widget.setCellText(row,0,f'192.168.100.{row+100}')
+   widget.setCellText(row,1,full_name)
+   widget.setCellText(row,4,'已发现 · 未验证视频')
+  widget.show();self.app.processEvents()
+  first=widget.rows[0]
+  self.assertEqual(first.height(),78)
+  self.assertEqual(first.thumbnail.width(),80)
+  self.assertEqual(first.thumbnail.height(),45)
+  self.assertLessEqual(first.width(),widget.scroll.viewport().width())
+  self.assertEqual(widget.item(0,1).text(),full_name)
+  self.assertEqual(widget.item(0,1).label.toolTip(),full_name)
+  for index in (0,1,4):
+   label=first.cells[index].label
+   self.assertGreaterEqual(label.x(),first.thumbnail.geometry().right()+1)
+   self.assertLessEqual(label.geometry().right(),first.width())
+   self.assertLessEqual(label.geometry().bottom(),first.height())
+  self.assertEqual(widget.scroll.horizontalScrollBar().maximum(),0)
+  widget.close()

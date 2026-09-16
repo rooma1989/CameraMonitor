@@ -14,7 +14,7 @@ for package in ('keyring', 'jaraco.classes', 'jaraco.context', 'jaraco.functools
     metadata += copy_metadata(package)
 a = Analysis(
     [str(root / 'packaging' / 'launcher.py')], pathex=[str(root)],
-    binaries=[], datas=metadata,
+    binaries=[], datas=metadata+[(str(root/"camera_monitor"/"assets"/"app-icon.png"),"camera_monitor/assets")],
     hiddenimports=['keyring.backends.Windows', 'win32ctypes.pywin32.win32cred'],
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=['tkinter', 'keyring.backends.macOS', 'PySide6.QtWebEngineCore',
@@ -26,5 +26,5 @@ exe = EXE(
     pyz, a.scripts, a.binaries, a.datas, [],
     name='CameraMonitor', debug=False, bootloader_ignore_signals=False,
     strip=False, upx=False, console=False, disable_windowed_traceback=False,
-    uac_admin=False,
+    uac_admin=False, icon=str(root/"camera_monitor"/"assets"/"app-icon.ico"),
 )

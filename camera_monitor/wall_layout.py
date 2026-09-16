@@ -8,7 +8,7 @@ def _template(count, featured):
     if featured and count == 6:
         return [(0,0,2),(2,0,1),(2,1,1)]+[(x,2,1) for x in range(3)]
     if featured and count == 10:
-        return [(0,0,3)]+[(3,y,1) for y in range(3)]+[(x*2/3,3,2/3) for x in range(6)]
+        return [(0,0,4)]+[(4,y,1) for y in range(4)]+[(x,4,1) for x in range(5)]
     if featured and count == 15:
         return ([(0,0,2)]+[(2+x*2/3,y*2/3,2/3) for x in range(2) for y in range(3)]
                 +[(x*5/6,2+y*5/6,5/6) for y in range(2) for x in range(4)])
