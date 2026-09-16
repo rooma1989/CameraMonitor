@@ -2,7 +2,7 @@
 from PySide6.QtCore import Qt,QTimer,Signal,QEvent,QMimeData
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (QWidget,QDialog,QVBoxLayout,QHBoxLayout,QGridLayout,
-    QLabel,QPushButton,QFrame,QScrollArea,QApplication,QMenu,QLineEdit)
+    QLabel,QPushButton,QFrame,QScrollArea,QApplication,QMenu,QLineEdit,QCheckBox)
 from .choices import ChoiceButton
 from .playback import PlayerWindow
 from .credentials import CredentialStore
@@ -232,6 +232,12 @@ class MultiView(QDialog):
         toolbar=QHBoxLayout(self.toolbar_widget)
         toolbar.setContentsMargins(0,0,0,0)
         toolbar.addWidget(heading)
+        self.fill_width=QCheckBox('横向铺满（允许变形）')
+        self._fill_width=str(self.device_names.settings.value('monitor/fill_width',False)).lower() in ('true','1')
+        self.fill_width.setChecked(self._fill_width)
+        self.fill_width.setToolTip('消除左右留白，画面横向拉宽；关闭后恢复 16:9。')
+        self.fill_width.toggled.connect(self.set_fill_width)
+        toolbar.addWidget(self.fill_width)
         toolbar.addStretch()
         self.auto=QPushButton('4 格默认')
         self.auto.setMinimumWidth(90)
@@ -403,7 +409,7 @@ class MultiView(QDialog):
         rects=wall_rectangles(count,width,height,not focused and self.capacity in (6,10,15),
                               header=0 if self.presentation else CameraTile.HEADER,
                               gap=1 if self.presentation else 4,
-                              columns=None if focused else self.grid_columns())
+                              columns=None if focused else self.grid_columns(),fill_width=self._fill_width)
         missing=count-len(visible)
         while len(self.placeholders)>missing:
             placeholder=self.placeholders.pop();placeholder.hide();placeholder.deleteLater()
@@ -454,6 +460,21 @@ class MultiView(QDialog):
 
     def toggle_focus(self,tile):
         self.focused_tile=None if self.focused_tile is tile else tile
+        self.relayout()
+
+    def set_fill_width(self,enabled):
+        settings=self.device_names.settings
+        if not self.presentation:
+            settings.setValue('monitor/fill_width',enabled)
+            settings.sync()
+            if settings.status()==settings.Status.NoError:
+                self._fill_width=enabled
+            else:
+                settings.setValue('monitor/fill_width',self._fill_width)
+                self.hint.setText('横向铺满设置未保存，请检查本机设置存储权限。')
+        self.fill_width.blockSignals(True)
+        self.fill_width.setChecked(self._fill_width)
+        self.fill_width.blockSignals(False)
         self.relayout()
 
     def grid_columns(self):
