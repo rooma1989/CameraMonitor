@@ -12,6 +12,9 @@ from .discovery import Device, interfaces, scan
 from .playback import PlayerWindow
 from .device_list import DeviceList
 from .multiview import MultiView
+from .screen_lock import ScreenLock,request_unlock,PasswordSettingsDialog
+from .thumbnails import ThumbnailController,ThumbnailPreview
+from .connection_options import ConnectionOptions
 
 
 class SearchWorker(QThread):
@@ -36,6 +39,7 @@ class Window(QMainWindow):
         from .device_names import DeviceNames
         self.device_names = device_names if device_names is not None else DeviceNames()
         self.device_names.changed.connect(self.refresh_device_name)
+        self.closing=False
         self.worker = None
         self.devices = {}
         self.networks = []
@@ -45,6 +49,9 @@ class Window(QMainWindow):
         self.batch_panel = None
         self.session_credentials = {}
         self.presentation = False
+        self.screen_lock=ScreenLock(self.device_names.settings)
+        self.unlock_prompt_active=False
+        self.authorized_exit=False
         self.setWindowTitle('Camera Monitor · 内网监控中心')
         self.resize(1586, 960)
         self.setMinimumSize(1100, 720)
@@ -152,6 +159,16 @@ class Window(QMainWindow):
         self.escape_shortcut.activated.connect(self.exit_fullscreen)
         self.fullscreen_shortcut=QShortcut(QKeySequence('F11'),self)
         self.fullscreen_shortcut.activated.connect(self.toggle_fullscreen)
+        self.thumbnails=ThumbnailController(store=self.wall.credential_store,
+            connection_options=ConnectionOptions(),live_image=self.live_thumbnail,
+            connection=self.thumbnail_connection,parent=self)
+        self.thumbnails.updated.connect(self.update_thumbnail)
+        self.table.thumbnailClicked.connect(self.show_thumbnail)
+        self.thumbnail_timer=QTimer(self);self.thumbnail_timer.setInterval(2500)
+        self.thumbnail_timer.timeout.connect(self.refresh_live_thumbnails);self.thumbnail_timer.start()
+        self.password_settings=QPushButton('大屏密码')
+        self.password_settings.clicked.connect(self.show_password_settings)
+        self.wall.toolbar_widget.layout().addWidget(self.password_settings)
         self.refresh_networks()
 
     def show_settings(self, player):
@@ -202,18 +219,76 @@ class Window(QMainWindow):
         self.was_maximized=self.isMaximized()
         self.set_presentation(True);self.showFullScreen()
 
+    def live_thumbnail(self,ip):
+        if self.wall:
+            for tile in self.wall.tiles:
+                if tile.player.device.ip==ip:return tile.player.surface._image
+        return None
+
+    def thumbnail_connection(self,device):
+        if self.wall:
+            for tile in self.wall.tiles:
+                p=tile.player
+                if p.device.ip==device.ip:
+                    return {'mode':('onvif','dahua','manual')[p.mode.currentIndex()],
+                            'channel':p.channel.value(),'url':p.manual.text(),
+                            'transport':p.transport.currentData()}
+        return {}
+
+    def update_thumbnail(self,ip,image,status):
+        for index,row in enumerate(self.table.rows):
+            if self.table.item(index,0).text()==ip:
+                self.table.setThumbnail(index,image,status);break
+
+    def refresh_live_thumbnails(self):
+        for device in self.devices.values():
+            if self.live_thumbnail(device.ip) is not None:self.thumbnails.request(device)
+
+    def show_thumbnail(self,row):
+        if self.presentation or not 0<=row<len(self.table.rows):return
+        image=self.table.rows[row].thumbnail_image
+        if image is None or image.isNull():
+            self.open_selected_settings();return
+        ip=self.table.item(row,0).text()
+        dialog=ThumbnailPreview(image,f'{self.device_names.display(self.devices[ip])} · {ip}',self)
+        try:dialog.exec()
+        finally:dialog.deleteLater()
+
+    def show_password_settings(self):
+        if self.presentation:return
+        dialog=PasswordSettingsDialog(self.screen_lock,self)
+        try:dialog.exec()
+        finally:dialog.deleteLater()
+
     def exit_fullscreen(self):
-        if not self.presentation:return
-        self.set_presentation(False)
-        self.showMaximized() if getattr(self,'was_maximized',False) else self.showNormal()
+        if not self.presentation:return True
+        if self.unlock_prompt_active:return False
+        self.unlock_prompt_active=True
+        try:allowed=request_unlock(self,self.screen_lock)
+        finally:self.unlock_prompt_active=False
+        if not allowed:return False
+        self.authorized_exit=True
+        try:
+            self.set_presentation(False)
+            self.showMaximized() if getattr(self,'was_maximized',False) else self.showNormal()
+        finally:self.authorized_exit=False
+        return True
+
+    def native_exit_requested(self):
+        if not self.presentation or self.authorized_exit:return
+        self.showFullScreen()
+        self.exit_fullscreen()
 
     def changeEvent(self,event):
         super().changeEvent(event)
         if event.type()==QEvent.Type.WindowStateChange and hasattr(self,'wall') and self.wall:
             if self.isFullScreen() and not self.presentation:self.set_presentation(True)
-            elif not self.isFullScreen() and self.presentation:self.set_presentation(False)
+            elif not self.isFullScreen() and self.presentation and not self.authorized_exit:
+                # Restore presentation before prompting so Cancel cannot expose settings.
+                QTimer.singleShot(0,self.native_exit_requested)
 
     def show_batch_settings(self):
+        if self.presentation:return
         from .batch_settings import BatchSettings
         devices=dict(self.devices)
         devices.update({t.player.device.ip:t.player.device for t in self.wall.tiles})
@@ -283,10 +358,12 @@ class Window(QMainWindow):
             self.search.setEnabled(False)
 
     def start_scan(self):
+        if self.presentation:return
         if self.worker and self.worker.isRunning():
             return
         net = self.network.currentData()
         networks = [net] if net else self.networks
+        self.thumbnails.cancel_all()
         self.devices.clear()
         self.table.setRowCount(0)
         self.details.clear()
@@ -348,9 +425,11 @@ class Window(QMainWindow):
             QApplication.clipboard().setText(self.table.item(row, 0).text())
 
     def open_selected_settings(self):
+        if self.presentation:return
         self.open_player(force_settings=True)
 
     def open_player(self,force_settings=False):
+        if self.presentation:return
         row=self.table.currentRow()
         item=self.table.item(row,0) if row>=0 else None
         if item is None:return
@@ -390,6 +469,9 @@ class Window(QMainWindow):
             self.status.setText('正在停止搜索…')
 
     def finish_scan(self):
+        if self.closing:return
+        for device in self.devices.values():
+            self.thumbnails.request(device,self.session_credentials.get(device.ip))
         cancelled = self.worker and self.worker.cancel.is_set()
         self.search.setEnabled(bool(self.networks))
         self.network.setEnabled(True)
@@ -405,6 +487,14 @@ class Window(QMainWindow):
             self.status.setText('搜索完成 · 未收到设备回复。这不代表没有摄像头，请检查下方提示后重新搜索。')
 
     def closeEvent(self, event):
+        if self.presentation and not self.exit_fullscreen():
+            event.ignore();return
+        self.closing=True
+        if self.worker and self.worker.isRunning():self.worker.cancel.set()
+        self.thumbnail_timer.stop()
+        self.thumbnails.cancel_all()
+        if self.thumbnails.busy():
+            event.ignore();QTimer.singleShot(200,self.close);return
         if self.wall is not None:
             self.wall.close()
             if self.wall is not None:

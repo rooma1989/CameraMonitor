@@ -3,7 +3,8 @@
 Qt's synthesized AX table rows/columns can outlive their cells on macOS 26.
 Each device here is a standard accessible button containing plain labels.
 """
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QWidget, QPushButton, QLabel, QVBoxLayout, QHBoxLayout, QScrollArea
 
 
@@ -22,17 +23,27 @@ class Cell:
 
 class DeviceRow(QPushButton):
     activated = Signal()
+    thumbnailClicked = Signal()
 
     def __init__(self, compact=False):
         super().__init__()
         self.setCheckable(True)
-        self.setMinimumHeight(88 if compact else 48)
+        self.setMinimumHeight(170 if compact else 80)
         self.setAccessibleDescription('点击选择摄像头，双击或按回车播放视频')
         self.setStyleSheet('''QPushButton {background:transparent; border:none; border-bottom:1px solid #e9eef5; border-radius:0; padding:8px;}
             QPushButton:checked {background:#e5efff; border-left:3px solid #2463eb;}
             QLabel {background:transparent; border:none;}''')
         layout = QVBoxLayout(self) if compact else QHBoxLayout(self)
         layout.setContentsMargins(10,5,10,5)
+        layout.setSpacing(4)
+        self.thumbnail_image = None
+        self.thumbnail = QPushButton('待获取画面')
+        self.thumbnail.setFixedSize(128 if compact else 112, 72 if compact else 64)
+        self.thumbnail.setIconSize(QSize(124 if compact else 108, 68 if compact else 60))
+        self.thumbnail.setAccessibleName('设备缩略图，点击查看大图')
+        self.thumbnail.setEnabled(False)
+        self.thumbnail.clicked.connect(self.thumbnailClicked.emit)
+        layout.addWidget(self.thumbnail)
         self.cells=[]
         for _ in range(5):
             label=QLabel()
@@ -46,6 +57,18 @@ class DeviceRow(QPushButton):
             self.cells[3].label.hide()
             self.cells[0].label.setStyleSheet("font-weight:700; font-size:14px;")
             self.cells[4].label.setStyleSheet("font-size:11px; color:#64748b;")
+
+    def set_thumbnail(self, image, status):
+        self.thumbnail_image = image.copy() if image is not None and not image.isNull() else None
+        self.thumbnail.setToolTip(status)
+        self.thumbnail.setAccessibleName('设备缩略图 · ' + status)
+        self.thumbnail.setEnabled(self.thumbnail_image is not None)
+        if self.thumbnail_image is not None:
+            self.thumbnail.setText('')
+            self.thumbnail.setIcon(QIcon(QPixmap.fromImage(self.thumbnail_image)))
+        else:
+            self.thumbnail.setIcon(QIcon())
+            self.thumbnail.setText('需登录' if '密码' in status else ('获取中…' if '获取' in status else '暂无预览'))
 
     def mouseDoubleClickEvent(self,event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -64,6 +87,7 @@ class DeviceRow(QPushButton):
 class DeviceList(QWidget):
     itemSelectionChanged=Signal()
     cellDoubleClicked=Signal(int,int)
+    thumbnailClicked=Signal(int)
 
     def __init__(self, compact=False):
         super().__init__()
@@ -76,6 +100,9 @@ class DeviceList(QWidget):
         header.setStyleSheet('background:#eaf0f7; border-radius:6px; font-weight:600;')
         labels=QHBoxLayout(header)
         labels.setContentsMargins(10,10,10,10)
+        thumb_header = QLabel('画面')
+        thumb_header.setFixedWidth(112)
+        labels.addWidget(thumb_header)
         for text in ('IP 地址','设备名称','型号','发现协议','状态'):
             labels.addWidget(QLabel(text),1)
         layout.addWidget(header)
@@ -98,6 +125,7 @@ class DeviceList(QWidget):
         self.rows.insert(index,row)
         self.body.insertWidget(index,row)
         row.clicked.connect(lambda checked: self.selectRow(self.rows.index(row)))
+        row.thumbnailClicked.connect(lambda: self.thumbnailClicked.emit(self.rows.index(row)))
         row.activated.connect(lambda: self.cellDoubleClicked.emit(self.rows.index(row),0))
 
     def selectRow(self,index):
@@ -111,6 +139,9 @@ class DeviceList(QWidget):
 
     def setCellText(self,row,column,text):
         self.item(row,column).setText(text)
+
+    def setThumbnail(self, row, image, status):
+        if 0 <= row < len(self.rows): self.rows[row].set_thumbnail(image, status)
 
     def setRowCount(self,count):
         if count != 0: raise ValueError('Only clearing the device list is supported')

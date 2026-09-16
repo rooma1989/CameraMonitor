@@ -1,38 +1,34 @@
-"""Pixel-exact monitor wall partitions; the first rectangle is the main view."""
+"""Fit a wall of 16:9 tiles into the available canvas, leaving only outer margins."""
 import math
 
 
-def _cells(x, y, width, height, columns, rows):
-    return [(x + width*c//columns, y + height*r//rows,
-             width*(c+1)//columns-width*c//columns,
-             height*(r+1)//rows-height*r//rows)
-            for r in range(rows) for c in range(columns)]
+def _template(count, featured):
+    if count == 1:
+        return [(0, 0, 1)]
+    if featured and count == 6:
+        return [(0,0,2),(2,0,1),(2,1,1)]+[(x,2,1) for x in range(3)]
+    if featured and count == 10:
+        return [(0,0,3)]+[(3,y,1) for y in range(3)]+[(x*2/3,3,2/3) for x in range(6)]
+    if featured and count == 15:
+        return ([(0,0,2)]+[(2+x*2/3,y*2/3,2/3) for x in range(2) for y in range(3)]
+                +[(x*5/6,2+y*5/6,5/6) for y in range(2) for x in range(4)])
+    columns,rows={4:(2,2),9:(3,3),12:(4,3),16:(4,4),20:(5,4),25:(5,5)}.get(
+        count,(math.ceil(math.sqrt(count)),math.ceil(count/math.ceil(math.sqrt(count)))))
+    return [(x,y,1) for y in range(rows) for x in range(columns)][:count]
 
 
-def wall_rectangles(count, width, height, featured=True, header=0, gap=0):
-    if count <= 0:return []
-    if count == 1:return [(0,0,width,height)]
-    # Bottom columns align with the main view's vertical edge.
-    presets = {6:(3,2,[2]), 9:(4,2,[2,2]), 10:(5,3,[2,2]),
-               12:(5,2,[2,2,2]), 15:(4,2,[3,3])}
-    if featured and count in (6,10,15):
-        bottom_columns, main_columns, right_rows = presets[count]
-        main_width = width*main_columns//bottom_columns
-        bottom_rows=2 if count==15 else 1
-        main_height = height*3//5 if count==15 else height*2//3
-        result=[(0,0,main_width,main_height)]
-        right_width=width-main_width
-        for col, rows in enumerate(right_rows):
-            x=main_width+right_width*col//len(right_rows)
-            w=right_width*(col+1)//len(right_rows)-right_width*col//len(right_rows)
-            result.extend(_cells(x,0,w,main_height,1,rows))
-        result.extend(_cells(0,main_height,width,height-main_height,bottom_columns,bottom_rows))
-        return result
-    # Equal fixed slots, independent of connected camera count.
-    columns, rows = {4:(2,2),9:(3,3),12:(4,3),16:(4,4),20:(5,4),25:(5,5)}.get(count,(math.ceil(math.sqrt(count)),math.ceil(count/math.ceil(math.sqrt(count)))))
-    # Fit the entire fixed grid to the canvas. Empty slots retain their geometry.
-    cell_width=max(1,min(width//columns, int(max(1,height/rows-header-gap)*16/9)+gap))
-    cell_height=round(max(1,cell_width-gap)*9/16)+header+gap
-    wall_width=cell_width*columns;wall_height=cell_height*rows
-    return _cells((width-wall_width)//2,(height-wall_height)//2,
-                  wall_width,wall_height,columns,rows)[:count]
+def wall_rectangles(count,width,height,featured=True,header=0,gap=0):
+    # Titles are overlays, so the whole tile (including empty slots) is 16:9.
+    if count<=0:return []
+    cells=_template(count,featured)
+    columns=max(x+size for x,y,size in cells)
+    rows=max(y+size for x,y,size in cells)
+    scale=min(width/(columns*16),height/(rows*9))
+    left=(width-columns*16*scale)/2
+    top=(height-rows*9*scale)/2
+    result=[]
+    for x,y,size in cells:
+        x1=round(left+x*16*scale);y1=round(top+y*9*scale)
+        x2=round(left+(x+size)*16*scale);y2=round(top+(y+size)*9*scale)
+        result.append((x1,y1,max(1,x2-x1),max(1,y2-y1)))
+    return result

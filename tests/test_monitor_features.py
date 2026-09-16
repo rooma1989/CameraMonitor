@@ -16,6 +16,7 @@ class MonitorFeatures(unittest.TestCase):
  @classmethod
  def setUpClass(cls): cls.app=QApplication.instance() or QApplication([])
  def setUp(self):
+  unlock=patch("camera_monitor.app.request_unlock",return_value=True);unlock.start();self.addCleanup(unlock.stop)
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
   self.names=DeviceNames(QSettings(self.tmp.name+'/prefs.ini',QSettings.Format.IniFormat))
  def window(self):
@@ -74,7 +75,8 @@ class MonitorFeatures(unittest.TestCase):
     with self.subTest(count=count,size=(width,height)):
      rects=wall_rectangles(count,width,height)
      self.assertEqual(len(rects),count)
-     self.assertEqual(sum(w*h for x,y,w,h in rects),width*height)
+     self.assertLessEqual(sum(w*h for x,y,w,h in rects),width*height)
+     for x,y,w,h in rects:self.assertAlmostEqual(h,w*9/16,delta=1.5)
      self.assertGreater(rects[0][2]*rects[0][3],max(w*h for x,y,w,h in rects[1:]))
      for i,(x,y,w,h) in enumerate(rects):
       self.assertTrue(x>=0 and y>=0 and x+w<=width and y+h<=height)
@@ -175,3 +177,13 @@ class MonitorFeatures(unittest.TestCase):
   self.assertEqual(again.wall.organization_input.text(),'<阳光养老院>')
   w.wall.organization_input.clear();w.wall.save_organization()
   self.assertFalse(w.wall.organization_header.isVisible())
+
+ def test_featured_can_be_selected_again_after_equal_layout(self):
+  w=self.window();w.wall.featured.activate_index(0)
+  self.assertEqual(w.wall.capacity,6)
+  w.wall.change_layout(4)
+  w.wall.featured.activate_index(0)
+  self.assertEqual(w.wall.capacity,6)
+  self.assertEqual(len(w.wall.placeholders),6)
+  w.show();self.app.processEvents()
+  self.assertTrue(all(b.isVisible() for b in w.wall.equal_buttons.values()))

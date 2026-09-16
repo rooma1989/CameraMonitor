@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QPushButton, QMenu
 
 class ChoiceButton(QPushButton):
     currentIndexChanged = Signal(int)
+    activated = Signal(int)
 
     def __init__(self):
         super().__init__('请选择')
@@ -17,9 +18,13 @@ class ChoiceButton(QPushButton):
         index=len(self._items)
         action=self._menu.addAction(text)
         action.setCheckable(True)
-        action.triggered.connect(lambda checked=False,i=index:self.setCurrentIndex(i))
+        action.triggered.connect(lambda checked=False,i=index:self.activate_index(i))
         self._items.append((text,data,action))
         if self._index < 0:self.setCurrentIndex(0)
+
+    def activate_index(self,index):
+        self.setCurrentIndex(index)
+        self.activated.emit(index)
 
     def addItems(self,texts):
         for text in texts:self.addItem(text)

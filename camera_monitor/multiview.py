@@ -18,7 +18,7 @@ class CameraTile(QFrame):
     def __init__(self,number,device,credential_store,parent=None):
         super().__init__(parent)
         self.setObjectName('cameraTile')
-        self.setStyleSheet('QFrame#cameraTile {background:white; border:1px solid #dce4ed; border-radius:6px;}')
+        self.setStyleSheet('QFrame#cameraTile {background:#101a28; border:0px solid #dce4ed; border-radius:0px;}')
         self.monitor=parent
         self.setAcceptDrops(True)
         self.drag_start=None
@@ -98,21 +98,15 @@ class CameraTile(QFrame):
     def layout_contents(self):
         if not hasattr(self,'controls'):return
         fullscreen=self.monitor.presentation
-        header=0 if fullscreen else self.HEADER
-        self.title.setVisible(not fullscreen);self.status.setVisible(not fullscreen)
-        self.title.setGeometry(0,0,max(1,self.width()-75),header)
-        self.status.setGeometry(max(0,self.width()-75),0,65,header)
-        available=max(1,self.height()-header)
-        video_width=min(self.width(),int(available*16/9))
-        video_height=max(1,round(video_width*9/16))
-        self.player.surface.setGeometry((self.width()-video_width)//2,header+(available-video_height)//2,video_width,video_height)
+        self.title.hide();self.status.hide()
+        self.player.surface.setGeometry(self.rect())
         width=min(self.player.surface.width(),350)
         self.controls.setGeometry(self.player.surface.width()-width,max(0,self.player.surface.height()-38),width,38)
         self.name_overlay.setMaximumWidth(max(1,self.player.surface.width()-16))
         self.name_overlay.adjustSize()
         x=max(0,self.player.surface.width()-self.name_overlay.width()-8) if 'right' in self.name_corner else 8
         y=max(0,self.player.surface.height()-self.name_overlay.height()-8) if 'bottom' in self.name_corner else 8
-        self.name_overlay.move(x,y);self.name_overlay.setVisible(fullscreen);self.name_overlay.raise_()
+        self.name_overlay.move(x,y);self.name_overlay.setVisible(True);self.name_overlay.raise_()
         if fullscreen:self.controls.hide()
 
     def resizeEvent(self,event):
@@ -236,9 +230,8 @@ class MultiView(QDialog):
         self.nine.clicked.connect(lambda:self.change_layout(9))
         toolbar.addWidget(self.nine)
         self.featured=ChoiceButton()
-        for count in (4,6,9,10,12,15,16,20,25):
-            self.featured.addItem(f'{count} 格' + (' · 一大多小' if count in (6,10,15) else ' · 等分'),count)
-        self.featured.currentIndexChanged.connect(lambda _:self.change_layout('featured'))
+        for count in (6,10,15):self.featured.addItem(f'一大多小 · {count} 格',count)
+        self.featured.activated.connect(lambda _:self.change_layout('featured'))
         toolbar.addWidget(self.featured)
         self.display_mode=ChoiceButton()
         self.display_mode.addItems(['完整画面', '铺满（裁剪）'])
@@ -256,6 +249,21 @@ class MultiView(QDialog):
         self.fullscreen.clicked.connect(self.fullscreen_requested)
         toolbar.addWidget(self.fullscreen)
         layout.addWidget(self.toolbar_widget)
+        self.layout_toolbar=QWidget()
+        layout_choices=QHBoxLayout(self.layout_toolbar)
+        layout_choices.setContentsMargins(0,0,0,0)
+        layout_choices.addWidget(QLabel('分屏'))
+        self.equal_buttons={4:self.four,9:self.nine}
+        for count in (12,16,20,25):
+            button=QPushButton(f'{count}画面')
+            button.clicked.connect(lambda checked=False,n=count:self.change_layout(n))
+            self.equal_buttons[count]=button
+        for button in self.equal_buttons.values():
+            toolbar.removeWidget(button);button.setMinimumWidth(62);layout_choices.addWidget(button)
+        toolbar.removeWidget(self.featured);layout_choices.addWidget(self.featured)
+        layout_choices.addStretch()
+        layout.addWidget(self.layout_toolbar)
+
         self.organization_button=QPushButton('机构名称')
         toolbar.addWidget(self.organization_button)
         self.organization_panel=QWidget()
@@ -379,19 +387,18 @@ class MultiView(QDialog):
             placeholder.setText(f'画面 {index:02d}\n暂无摄像头')
             placeholder.setGeometry(*rect);placeholder.show()
         for tile,(x,y,w,h) in zip(visible,rects):
-            gap=1 if self.presentation else 4
-            tile.setGeometry(x,y,max(1,w-gap),max(1,h-gap))
+            tile.setGeometry(x,y,w,h)
             tile.layout_contents();tile.show()
             tile.expand.setText('返回' if self.focused_tile is tile else '放大')
         for tile in self.tiles:
             if tile not in visible:tile.hide()
-        for button,mode in ((self.auto,'auto'),(self.four,4),(self.nine,9)):
+        for mode,button in self.equal_buttons.items():
             button.setStyleSheet('background:#2463eb;color:white;border:1px solid #2463eb;' if self.layout_mode==mode else '')
 
     def set_presentation(self,enabled):
         self.presentation=enabled
         self.canvas.setStyleSheet('background:#101a28;' if enabled else '')
-        self.toolbar_widget.setVisible(not enabled);self.hint.setVisible(not enabled)
+        self.toolbar_widget.setVisible(not enabled);self.layout_toolbar.setVisible(not enabled);self.hint.setVisible(not enabled)
         if enabled:self.organization_panel.hide()
         self.organization_header.setVisible(enabled and bool(self.organization_header.text()))
         self.layout().setContentsMargins(*((0,0,0,0) if enabled else (9,9,9,9)))
@@ -419,7 +426,8 @@ class MultiView(QDialog):
             self.hint.setText('已有画面数量超过所选布局，请先移除多余设备。');return False
         self.layout_mode=capacity;self.capacity=limit
         self.featured.blockSignals(True)
-        self.featured.setCurrentIndex((4,6,9,10,12,15,16,20,25).index(capacity))
+        if capacity in (6,10,15):self.featured.setCurrentIndex((6,10,15).index(capacity))
+        else:self.featured.setText('一大多小')
         self.featured.blockSignals(False)
         self.focused_tile=None;self.relayout();return True
 
