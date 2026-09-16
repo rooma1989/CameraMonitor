@@ -49,22 +49,20 @@ class ThumbnailWorker(QThread):
         try:
             credentials = self.credentials if self.credentials is not None else self.store.load(self.device.ip)
             if self.cancel.is_set(): return
-            if credentials is None:
-                status = '待输入账号密码'
+            # Match playback: missing saved credentials may mean an anonymous camera.
+            username, password = credentials[:2] if credentials is not None else ('', '')
+            mode = self.options.get('mode', 'onvif')
+            if mode == 'manual':
+                url = same_device_url(self.options.get('url', ''), self.device.ip)
+            elif mode == 'dahua':
+                url = dahua_streams(self.device.ip, self.options.get('channel', 1))[0].url
             else:
-                username, password = credentials[:2]
-                mode = self.options.get('mode', 'onvif')
-                if mode == 'manual':
-                    url = same_device_url(self.options.get('url', ''), self.device.ip)
-                elif mode == 'dahua':
-                    url = dahua_streams(self.device.ip, self.options.get('channel', 1))[0].url
-                else:
-                    client = OnvifClient(self.device, username, password, self.cancel)
-                    url = client.streams()[0].url
-                if not self.cancel.is_set():
-                    image = first_frame(authenticated_url(url, username, password), self.cancel,
-                                        self.options.get('transport', 'tcp'))
-                    if image is not None: status = '抓拍画面 · 点击放大'
+                client = OnvifClient(self.device, username, password, self.cancel)
+                url = client.streams()[0].url
+            if not self.cancel.is_set():
+                image = first_frame(authenticated_url(url, username, password), self.cancel,
+                                    self.options.get('transport', 'tcp'))
+                if image is not None: status = '抓拍画面 · 点击放大'
         except CredentialError:
             status = '无法读取密码，请打开连接设置'
         except (AuthError, av.error.HTTPUnauthorizedError, av.error.HTTPForbiddenError):

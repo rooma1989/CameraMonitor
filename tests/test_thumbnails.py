@@ -38,14 +38,50 @@ class ThumbnailTests(unittest.TestCase):
         store.load.assert_not_called()
         self.assertEqual(results[-1][1].width(), 64)
 
-    def test_missing_credentials_do_not_connect(self):
-        worker = ThumbnailWorker(Device('192.168.1.2'), 1, Mock(load=Mock(return_value=None)), {})
+    def test_missing_credentials_allow_anonymous_udp_preview(self):
+        worker = ThumbnailWorker(Device('192.168.1.234'), 1,
+            Mock(load=Mock(return_value=None)), {'transport': 'udp'})
         results=[]
         worker.result.connect(lambda *args: results.append(args))
-        with patch('camera_monitor.thumbnails.first_frame') as read:
+        image = QImage(64, 48, QImage.Format.Format_RGB888)
+        client = Mock()
+        client.streams.return_value = [Mock(url='rtsp://192.168.1.234/live')]
+        with patch('camera_monitor.thumbnails.OnvifClient', return_value=client) as resolve, \
+             patch('camera_monitor.thumbnails.first_frame', return_value=image) as read:
+            worker.run()
+        resolve.assert_called_once_with(worker.device, '', '', worker.cancel)
+        read.assert_called_once_with('rtsp://192.168.1.234/live', worker.cancel, 'udp')
+        self.assertIs(results[-1][2], image)
+        client.close.assert_called_once()
+
+    def test_anonymous_auth_failure_prompts_for_credentials_without_retry(self):
+        from camera_monitor.streams import AuthError
+        worker = ThumbnailWorker(Device('192.168.1.2'), 1,
+            Mock(load=Mock(return_value=None)), {})
+        results=[]
+        worker.result.connect(lambda *args: results.append(args))
+        client = Mock()
+        client.streams.side_effect = AuthError('secret must not appear')
+        with patch('camera_monitor.thumbnails.OnvifClient', return_value=client), \
+             patch('camera_monitor.thumbnails.first_frame') as read:
             worker.run()
         read.assert_not_called()
-        self.assertEqual(results[-1][3], '待输入账号密码')
+        client.streams.assert_called_once()
+        self.assertEqual(results[-1][3], '认证失败，请检查账号密码')
+        client.close.assert_called_once()
+
+    def test_saved_udp_and_credentials_reach_preview_worker(self):
+        factory = Mock(side_effect=FakeWorker)
+        store = Mock()
+        controller = ThumbnailController(store=store,
+            connection_options=Mock(transport=Mock(return_value='udp')), worker_factory=factory)
+        device = Device('192.168.1.234')
+        controller.request(device)
+        args = factory.call_args.args
+        self.assertIs(args[2], store)
+        self.assertEqual(args[3]['transport'], 'udp')
+        self.assertIsNone(args[4])  # The worker loads the vault when no session is supplied.
+        controller.cancel_all()
 
     def test_concurrency_cancellation_and_stale_results(self):
         controller = ThumbnailController(store=Mock(), worker_factory=FakeWorker)
