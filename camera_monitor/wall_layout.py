@@ -2,7 +2,10 @@
 import math
 
 
-def _template(count, featured):
+DEFAULT_COLUMNS = {4:2, 9:3, 12:3, 16:4, 20:4, 25:5}
+
+
+def _template(count, featured, columns=None):
     if count == 1:
         return [(0, 0, 1)]
     if featured and count == 6:
@@ -12,15 +15,16 @@ def _template(count, featured):
     if featured and count == 15:
         return ([(0,0,2)]+[(2+x*2/3,y*2/3,2/3) for x in range(2) for y in range(3)]
                 +[(x*5/6,2+y*5/6,5/6) for y in range(2) for x in range(4)])
-    columns,rows={4:(2,2),9:(3,3),12:(4,3),16:(4,4),20:(5,4),25:(5,5)}.get(
-        count,(math.ceil(math.sqrt(count)),math.ceil(count/math.ceil(math.sqrt(count)))))
+    if not isinstance(columns, int) or not 1 <= columns <= count:
+        columns = DEFAULT_COLUMNS.get(count, math.ceil(math.sqrt(count)))
+    rows = math.ceil(count / columns)
     return [(x,y,1) for y in range(rows) for x in range(columns)][:count]
 
 
-def wall_rectangles(count,width,height,featured=True,header=0,gap=0):
+def wall_rectangles(count,width,height,featured=True,header=0,gap=0,columns=None):
     # Titles are overlays, so the whole tile (including empty slots) is 16:9.
     if count<=0:return []
-    cells=_template(count,featured)
+    cells=_template(count,featured,columns)
     columns=max(x+size for x,y,size in cells)
     rows=max(y+size for x,y,size in cells)
     scale=min(width/(columns*16),height/(rows*9))

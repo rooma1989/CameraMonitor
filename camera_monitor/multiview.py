@@ -7,7 +7,7 @@ from .choices import ChoiceButton
 from .playback import PlayerWindow
 from .credentials import CredentialStore
 from .device_names import DeviceNames
-from .wall_layout import wall_rectangles
+from .wall_layout import wall_rectangles, DEFAULT_COLUMNS
 
 
 class CameraTile(QFrame):
@@ -282,6 +282,11 @@ class MultiView(QDialog):
         for button in self.equal_buttons.values():
             toolbar.removeWidget(button);button.setMinimumWidth(62);layout_choices.addWidget(button)
         toolbar.removeWidget(self.featured);layout_choices.addWidget(self.featured)
+        self.columns_choice=ChoiceButton()
+        self.columns_choice.setToolTip('设置当前等分布局每行的画面数量；每格保持 16:9。')
+        self.columns_choice.activated.connect(lambda _:self.set_grid_columns(self.columns_choice.currentData()))
+        layout_choices.addWidget(self.columns_choice)
+        self.sync_columns_choice()
         layout_choices.addStretch()
         layout.addWidget(self.layout_toolbar)
 
@@ -397,7 +402,8 @@ class MultiView(QDialog):
         count=1 if focused else self.capacity
         rects=wall_rectangles(count,width,height,not focused and self.capacity in (6,10,15),
                               header=0 if self.presentation else CameraTile.HEADER,
-                              gap=1 if self.presentation else 4)
+                              gap=1 if self.presentation else 4,
+                              columns=None if focused else self.grid_columns())
         missing=count-len(visible)
         while len(self.placeholders)>missing:
             placeholder=self.placeholders.pop();placeholder.hide();placeholder.deleteLater()
@@ -450,6 +456,49 @@ class MultiView(QDialog):
         self.focused_tile=None if self.focused_tile is tile else tile
         self.relayout()
 
+    def grid_columns(self):
+        default=DEFAULT_COLUMNS.get(self.capacity)
+        if default is None:return None
+        value=self.device_names.settings.value(f'monitor/columns/{self.capacity}',default)
+        try:value=int(value)
+        except (ValueError,TypeError):return default
+        return value if 1<=value<=self.capacity else default
+
+    def sync_columns_choice(self):
+        choice=self.columns_choice
+        choice.blockSignals(True)
+        choice.clear()
+        default=DEFAULT_COLUMNS.get(self.capacity)
+        choice.setEnabled(default is not None)
+        if default is None:
+            choice.setText('每行数量 · 环绕固定')
+        else:
+            choice.addItem(f'每行 {default} 个（默认）',None)
+            for columns in range(1,self.capacity+1):
+                choice.addItem(f'每行 {columns} 个',columns)
+            current=self.grid_columns()
+            choice.setCurrentIndex(0 if current==default else current)
+        choice.blockSignals(False)
+
+    def set_grid_columns(self,columns):
+        if self.presentation or self.capacity not in DEFAULT_COLUMNS:return False
+        if columns is not None and (not isinstance(columns,int) or not 1<=columns<=self.capacity):return False
+        settings=self.device_names.settings
+        key=f'monitor/columns/{self.capacity}'
+        previous=settings.value(key,None)
+        if columns is None:settings.remove(key)
+        else:settings.setValue(key,columns)
+        settings.sync()
+        if settings.status()!=settings.Status.NoError:
+            if previous is None:settings.remove(key)
+            else:settings.setValue(key,previous)
+            self.hint.setText('每行数量未保存，请检查本机设置存储权限。')
+            self.sync_columns_choice()
+            return False
+        self.sync_columns_choice()
+        self.relayout()
+        return True
+
     def change_layout(self,capacity):
         if capacity=='featured':capacity=self.featured.currentData()
         if capacity=='auto':capacity=4
@@ -468,6 +517,7 @@ class MultiView(QDialog):
         if capacity in (6,10,15):self.featured.setCurrentIndex((6,10,15).index(capacity))
         else:self.featured.setText('一大多小')
         self.featured.blockSignals(False)
+        self.sync_columns_choice()
         self.focused_tile=None;self.relayout();return True
 
     def remove_tile(self,tile):
