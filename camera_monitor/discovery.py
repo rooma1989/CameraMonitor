@@ -141,8 +141,20 @@ def merge_device(records: dict[str, Device], incoming: Device) -> Device:
     return replace(records[incoming.ip], protocols=list(records[incoming.ip].protocols), urls=list(records[incoming.ip].urls))
 
 
+def validate_target_ip(value: str) -> str:
+    try:
+        ip = ipaddress.IPv4Address(value.strip())
+    except ipaddress.AddressValueError:
+        raise ValueError('请输入有效的 IPv4 地址，例如 192.168.2.216。') from None
+    if ip.is_unspecified or ip.is_multicast or int(ip) == 0xffffffff:
+        raise ValueError('请输入摄像头的单个 IPv4 地址，不能使用组播或广播地址。')
+    return str(ip)
+
+
 def scan(networks: list[Interface], on_device=lambda device: None, on_status=lambda text: None,
-         cancel: threading.Event | None = None, duration: float = 8.0) -> list[Device]:
+         cancel: threading.Event | None = None, duration: float = 8.0, target_ip: str | None = None) -> list[Device]:
+    if target_ip is not None:
+        target_ip = validate_target_ip(target_ip)
     cancel = cancel or threading.Event()
     records: dict[str, Device] = {}
     channels = []
@@ -161,8 +173,8 @@ def scan(networks: list[Interface], on_device=lambda device: None, on_status=lam
                     sock.bind((network.ip, 0))
                     sock.setblocking(False)
                     # A dedicated socket on each interface ensures responses return to that NIC.
-                    destinations = [(group, port)]
-                    if protocol == '大华 DHIP':
+                    destinations = [(target_ip or group, port)]
+                    if target_ip is None and protocol == '大华 DHIP':
                         destinations += [(network.broadcast, port)]
                     channel = (sock, network, protocol, packet, destinations, parser)
                     selector.register(sock, selectors.EVENT_READ, channel)
@@ -193,6 +205,8 @@ def scan(networks: list[Interface], on_device=lambda device: None, on_status=lam
                     continue
                 except OSError as exc:
                     on_status(f'{network.name} 接收失败：{exc}')
+                    continue
+                if target_ip is not None and address[0] != target_ip:
                     continue
                 for device in parser(data, address[0]):
                     device.interface = f'{network.name} · {network.ip}'

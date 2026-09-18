@@ -7,9 +7,9 @@ from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QLineEdit, QBoxLayout,
+    QLabel, QPushButton, QLineEdit, QBoxLayout, QInputDialog,
     QAbstractItemView, QPlainTextEdit, QProgressBar, QSplitter, QFrame, QScrollArea, QStackedWidget, QSizePolicy)
-from .discovery import Device, interfaces, scan
+from .discovery import Device, interfaces, scan, validate_target_ip
 from .playback import PlayerWindow
 from .device_list import DeviceList
 from .multiview import MultiView
@@ -22,14 +22,15 @@ class SearchWorker(QThread):
     device = Signal(object)
     message = Signal(str)
 
-    def __init__(self, networks, parent=None):
+    def __init__(self, networks, parent=None, target_ip=None):
         super().__init__(parent)
         self.networks = networks
+        self.target_ip = target_ip
         self.cancel = threading.Event()
 
     def run(self):
         try:
-            scan(self.networks, self.device.emit, self.message.emit, self.cancel)
+            scan(self.networks, self.device.emit, self.message.emit, self.cancel, target_ip=self.target_ip)
         except Exception as exc:
             self.message.emit(f'搜索发生错误：{exc}')
 
@@ -42,6 +43,8 @@ class Window(QMainWindow):
         self.device_names.changed.connect(self.refresh_device_name)
         self.closing=False
         self.worker = None
+        self.target_ip = None
+        self.target_received = False
         self.devices = {}
         self.networks = []
         self.players = []
@@ -87,10 +90,15 @@ class Window(QMainWindow):
         self.stop=QPushButton('停止');self.stop.setEnabled(False)
         self.stop.clicked.connect(self.cancel_scan);actions.addWidget(self.stop)
         side.addLayout(actions)
+        self.add_ip=QPushButton('按 IP 添加')
+        self.add_ip.clicked.connect(self.prompt_target_ip)
+        side.addWidget(self.add_ip)
         self.refresh=QPushButton('刷新网络');self.refresh.clicked.connect(self.refresh_networks)
 
         self.status=QLabel('准备就绪 · 点击搜索设备');self.status.setWordWrap(True)
-        self.status.setObjectName('muted');side.addWidget(self.status)
+        self.status.setObjectName('muted')
+        self.status.setSizePolicy(QSizePolicy.Policy.Preferred,QSizePolicy.Policy.Minimum)
+        side.addWidget(self.status)
         self.progress=QProgressBar();self.progress.setRange(0,1);self.progress.setValue(0)
         self.progress.setTextVisible(False);self.progress.setFixedHeight(3);side.addWidget(self.progress)
         self.table=DeviceList(compact=True)
@@ -359,20 +367,39 @@ class Window(QMainWindow):
             self.status.setText(f'无法读取网络：{exc}')
             self.search.setEnabled(False)
 
-    def start_scan(self):
+    def prompt_target_ip(self):
+        if self.presentation or (self.worker and self.worker.isRunning()):return
+        value, accepted = QInputDialog.getText(self, '按 IP 添加',
+            '请输入摄像头 IPv4 地址（例如 192.168.2.216）：')
+        if accepted:self.start_target_scan(value)
+
+    def start_target_scan(self, value):
+        if self.presentation or (self.worker and self.worker.isRunning()):return
+        try:
+            target = validate_target_ip(value)
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            return
+        self.start_scan(target_ip=target)
+
+    def start_scan(self, checked=False, *, target_ip=None):
         if self.presentation:return
         if self.worker and self.worker.isRunning():
             return
         net = self.network.currentData()
         networks = [net] if net else self.networks
+        self.target_ip = target_ip
+        self.target_received = False
         self.thumbnails.cancel_all()
-        self.devices.clear()
-        self.table.setRowCount(0)
-        self.details.clear()
+        if target_ip is None:
+            self.devices.clear()
+            self.table.setRowCount(0)
+            self.details.clear()
         self.log.clear()
         self.copy.setEnabled(False)
         self.play.setEnabled(False)
         self.search.setEnabled(False)
+        self.add_ip.setEnabled(False)
         self.network.setEnabled(False)
         self.refresh.setEnabled(False)
         self.stop.setEnabled(True)
@@ -381,7 +408,12 @@ class Window(QMainWindow):
         self.log.appendPlainText('搜索网络：' + '、'.join(f'{n.name} ({n.ip})' for n in networks))
         if self.worker:
             self.worker.deleteLater()
-        self.worker = SearchWorker(networks, self)
+        if target_ip:
+            self.status.setText(f'正在探测 {target_ip}… 约 8 秒。')
+            self.log.appendPlainText(f'定向搜索：{target_ip}')
+            self.worker = SearchWorker(networks, self, target_ip=target_ip)
+        else:
+            self.worker = SearchWorker(networks, self)
         self.worker.device.connect(self.add_device)
         self.worker.message.connect(self.log.appendPlainText)
         self.worker.finished.connect(self.finish_scan)
@@ -399,6 +431,7 @@ class Window(QMainWindow):
     def add_device(self, device: Device):
         row = list(self.devices).index(device.ip) if device.ip in self.devices else self.table.rowCount()
         self.devices[device.ip] = device
+        if device.ip == self.target_ip:self.target_received = True
         if row == self.table.rowCount():
             self.table.insertRow(row)
         for column, text in enumerate((device.ip, self.device_names.display(device), device.model or '未提供', ' + '.join(device.protocols), '已发现 · 未验证视频')):
@@ -474,8 +507,10 @@ class Window(QMainWindow):
         if self.closing:return
         for device in self.devices.values():
             self.thumbnails.request(device,self.session_credentials.get(device.ip))
+        self.show_details()
         cancelled = self.worker and self.worker.cancel.is_set()
         self.search.setEnabled(bool(self.networks))
+        self.add_ip.setEnabled(True)
         self.network.setEnabled(True)
         self.refresh.setEnabled(True)
         self.stop.setEnabled(False)
@@ -483,6 +518,15 @@ class Window(QMainWindow):
         self.progress.setValue(1)
         if cancelled:
             self.status.setText(f'搜索已停止 · 已发现 {len(self.devices)} 台设备')
+        elif self.target_ip:
+            target = self.target_ip
+            if self.target_received and target in self.devices:
+                self.device_filter.clear()
+                self.table.selectRow(list(self.devices).index(target))
+                self.status.setText(f'已添加 {target} · 请在连接设置中填写账号密码。')
+                self.open_selected_settings()
+            else:
+                self.status.setText(f'未收到 {target} 的设备回复，请检查 IP、网络连接和 ONVIF 是否开启。')
         elif self.devices:
             self.status.setText(f'搜索完成 · 发现 {len(self.devices)} 台设备，请选中设备查看 IP 和详情。')
         else:
