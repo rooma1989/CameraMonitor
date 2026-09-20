@@ -1,4 +1,5 @@
 """Build on Windows with CPython 3.12 x64; produces a single portable EXE."""
+import re
 import sys
 import struct
 import sysconfig
@@ -9,6 +10,9 @@ if sys.platform != 'win32' or struct.calcsize('P') != 8 or sysconfig.get_platfor
     raise SystemExit('Build requires Windows and x64 Python (not ARM64).')
 
 root = Path(SPECPATH).parent
+# 与 macOS 一致：版本号只有 camera_monitor/__init__.py 一处
+version = re.search(r"__version__\s*=\s*'([^']+)'",
+                    (root / 'camera_monitor' / '__init__.py').read_text(encoding='utf-8')).group(1)
 metadata = []
 for package in ('keyring', 'jaraco.classes', 'jaraco.context', 'jaraco.functools'):
     metadata += copy_metadata(package)

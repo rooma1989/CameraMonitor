@@ -1,7 +1,11 @@
+import re
 from pathlib import Path
 from PyInstaller.utils.hooks import copy_metadata
 
 root=Path(SPECPATH).parent
+# 版本号只有 camera_monitor/__init__.py 一处，避免发版时漏改
+version=re.search(r"__version__\s*=\s*'([^']+)'",
+                  (root/'camera_monitor'/'__init__.py').read_text(encoding='utf-8')).group(1)
 metadata=[]
 for package in ('keyring','jaraco.classes','jaraco.context','jaraco.functools'):
     metadata += copy_metadata(package)
@@ -17,9 +21,9 @@ exe=EXE(pyz,a.scripts,[],exclude_binaries=True,name='CameraMonitor',
     target_arch='arm64',codesign_identity=None,entitlements_file=None)
 coll=COLLECT(exe,a.binaries,a.datas,strip=False,upx=False,name='CameraMonitor')
 app=BUNDLE(coll,name='Camera Monitor.app',bundle_identifier='com.cameramonitor.desktop',
-    icon=str(root/'camera_monitor'/'assets'/'app-icon.icns'),version='0.7.4',info_plist={
+    icon=str(root/'camera_monitor'/'assets'/'app-icon.icns'),version=version,info_plist={
         'CFBundleDisplayName':'Camera Monitor',
-        'CFBundleShortVersionString':'0.7.4',
+        'CFBundleShortVersionString':version,
         'LSMinimumSystemVersion':'14.0',
         'NSHighResolutionCapable':True,
         'NSLocalNetworkUsageDescription':'搜索并连接同一局域网中的摄像头，显示实时监控画面。',
