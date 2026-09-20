@@ -62,3 +62,50 @@ class GridColumnsTests(unittest.TestCase):
                 wall.change_layout(12)
                 self.assertEqual(wall.grid_columns(),3)
                 wall.close()
+
+
+class DummyStore:
+    def load(self, ip): return None
+    def save(self, *args): pass
+    def forget(self, ip): pass
+
+
+class LayoutPersistenceTests(unittest.TestCase):
+    """分屏数量要跨重启保留——纯单机用户同样受益，不只是云端同步。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def make(self, path):
+        from camera_monitor.device_names import DeviceNames
+        from camera_monitor.multiview import MultiView
+        names = DeviceNames(QSettings(path, QSettings.Format.IniFormat))
+        view = MultiView([], device_names=names, credential_store=DummyStore())
+        self.addCleanup(view.deleteLater)
+        return view
+
+    def test_the_chosen_layout_comes_back_next_time(self):
+        import tempfile, os
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = os.path.join(folder.name, 'prefs.ini')
+
+        first = self.make(path)
+        self.assertEqual(4, first.capacity, '初次使用仍然是 4 格')
+        self.assertTrue(first.change_layout(16))
+
+        again = self.make(path)
+        self.assertEqual(16, again.capacity)
+        self.assertEqual(16, again.layout_mode, '按钮高亮也要跟着走')
+
+    def test_a_nonsense_saved_value_falls_back_to_four(self):
+        import tempfile, os
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = os.path.join(folder.name, 'prefs.ini')
+        settings = QSettings(path, QSettings.Format.IniFormat)
+        settings.setValue('monitor/capacity', 7)
+        settings.sync()
+
+        self.assertEqual(4, self.make(path).capacity)

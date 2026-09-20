@@ -213,9 +213,9 @@ class MultiView(QDialog):
         self.resize(1200,850)
         self.setMinimumSize(620,350) if embedded else self.setMinimumSize(820,600)
         self.credential_store=credential_store or CredentialStore()
-        self.capacity=4
+        self.capacity=self.saved_capacity()
         self.presentation=False
-        self.layout_mode=4
+        self.layout_mode=self.capacity
         self.focused_tile=None
         self.layout_timer=QTimer(self)
         self.layout_timer.setSingleShot(True)
@@ -344,6 +344,17 @@ class MultiView(QDialog):
             self.display_mode.hide()
         self.update_devices(devices)
         self.relayout()
+
+    def saved_capacity(self):
+        """上次用的分屏数量。以前这个值只写不读，每次开软件都回到 4 格。"""
+        try:value=int(self.device_names.settings.value('monitor/capacity',4))
+        except (TypeError,ValueError):return 4
+        return value if value in (4,6,9,10,12,15,16,20,25) else 4
+
+    def save_capacity(self):
+        settings=self.device_names.settings
+        settings.setValue('monitor/capacity',self.capacity)
+        settings.sync()
 
     def save_organization(self):
         from PySide6.QtCore import QSettings
@@ -539,6 +550,7 @@ class MultiView(QDialog):
             self.tiles=[t for t in self.slots if t is not None]
             self.persist_slots()
         self.layout_mode=capacity;self.capacity=limit
+        self.save_capacity()
         self.featured.blockSignals(True)
         if capacity in (6,10,15):self.featured.setCurrentIndex((6,10,15).index(capacity))
         else:self.featured.setText('一大多小')

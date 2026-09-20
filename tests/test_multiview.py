@@ -1,16 +1,23 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+import tempfile
 import unittest
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication,QAbstractItemView
 from camera_monitor.multiview import MultiView
 from camera_monitor.discovery import Device
 from camera_monitor.credentials import CredentialStore
+from camera_monitor.device_names import DeviceNames
 from test_credentials import MemoryVault
 
 class MultiViewTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):cls.app=QApplication.instance() or QApplication([])
- def window(self):return MultiView([],credential_store=CredentialStore(MemoryVault()))
+ def window(self):
+  # 必须注入设置：否则读写的是这台机器真实的偏好，测试结果会随使用者的配置漂移
+  folder=tempfile.TemporaryDirectory();self.addCleanup(folder.cleanup)
+  names=DeviceNames(QSettings(os.path.join(folder.name,'prefs.ini'),QSettings.Format.IniFormat))
+  return MultiView([],credential_store=CredentialStore(MemoryVault()),device_names=names)
  def test_independent_players_duplicate_prevention_and_layout(self):
   w=self.window()
   self.assertTrue(w.add_device(Device('192.168.1.1')))
