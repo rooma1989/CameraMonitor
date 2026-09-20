@@ -128,10 +128,18 @@ class CloudSync(QObject):
         try:
             session = self.session.load_session()
         except CredentialError as exc:
+            # 安全存储可能只是暂时不可用，别把人的设置清掉，但按钮要如实显示未连接
+            self.session_changed.emit(False)
             self.status.emit(str(exc))
             return
+
         if not session or not session.get('token'):
-            self.status.emit('云端同步未登录，请重新输入授权码。')
+            # 设置说已启用、钥匙串里却没有会话（条目被删，或配置迁移到了新机器）。
+            # 这时必须回到未连接，否则按钮会写着「退出云端」而其实根本没登录。
+            self.settings.setValue('cloud/enabled', False)
+            self.settings.sync()
+            self.session_changed.emit(False)
+            self.status.emit('云端同步需要重新登录，请输入授权码。')
             return
 
         self.token = session['token']

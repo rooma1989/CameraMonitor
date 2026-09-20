@@ -180,6 +180,41 @@ class CloudSyncTest(unittest.TestCase):
         self.assertTrue(offline, '断网时也要把本机缓存铺开，监控墙不能空着')
         self.assertTrue(any('无法连接' in m for m in messages))
 
+    def test_enabled_without_a_stored_session_falls_back_to_disconnected(self):
+        # 设置说已启用、钥匙串里却没有会话：条目被删，或配置迁移到了新机器而钥匙串没跟过来。
+        # 按钮必须如实显示未连接，否则会写着「退出云端 · 某档案」而其实根本没登录。
+        self.settings.setValue('cloud/enabled', True)
+        self.settings.setValue('cloud/profile_name', '一楼大厅')
+        self.settings.sync()
+        states = []
+        self.sync.session_changed.connect(states.append)
+
+        self.sync.start()
+
+        self.assertEqual([False], states)
+        self.assertFalse(self.sync.enabled())
+        self.assertTrue(any('重新登录' in m for m in self.statuses))
+
+    def test_an_unreadable_vault_reports_disconnected_without_wiping_the_setting(self):
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+
+        class Broken:
+            def load_session(self):
+                from camera_monitor.credentials import CredentialError
+                raise CredentialError('无法读取云端登录信息，请重新输入授权码。')
+
+        fresh = CloudSync(self.names, self.options, self.store, collector=lambda: self.collected,
+                          client=self.client, settings=self.settings, session_store=Broken())
+        self.addCleanup(fresh.stop)
+        states = []
+        fresh.session_changed.connect(states.append)
+
+        fresh.start()
+
+        self.assertEqual([False], states)
+        self.assertTrue(fresh.enabled(), '安全存储可能只是暂时不可用，不该清掉设置')
+
     def test_a_network_failure_keeps_the_session(self):
         self.sync.login('code12345')
         self.assertTrue(self.settled())
