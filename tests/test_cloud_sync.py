@@ -136,7 +136,9 @@ class CloudSyncTest(unittest.TestCase):
         self.assertEqual(('admin', 'pw'), self.store.load('10.0.0.1'))
 
     def test_login_with_an_empty_cloud_profile_uploads_this_computer(self):
-        self.names.save_slot_order(['192.168.1.5'])
+        # 方向判定要看「这次真要上传的内容」：刚添加的摄像头还没写进 slot_order
+        self.collected = {'version': 0, 'layout': {'capacity': 4},
+                          'cameras': [{'ip': '192.168.1.5', 'slot_index': 0}]}
         self.client.login_result = dict(snapshot(cameras=[]), token='cm1.token')
 
         self.sync.login('code12345')
@@ -146,6 +148,20 @@ class CloudSyncTest(unittest.TestCase):
 
         self.assertTrue(any(call[0] == 'push' for call in self.client.calls),
                         '云端为空而本机已有配置时，应当把本机这份传上去')
+
+    def test_a_machine_with_cameras_but_no_saved_slot_order_still_counts_as_configured(self):
+        self.assertEqual([], self.names.slot_order())
+        self.collected = {'version': 0, 'layout': {'capacity': 4},
+                          'cameras': [{'ip': '10.0.0.1', 'slot_index': 0}]}
+        self.client.login_result = dict(snapshot(cameras=[]), token='cm1.token')
+        messages = []
+        self.sync.login_result.connect(lambda ok, m: messages.append(m))
+
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+
+        self.assertTrue(any('上传' in m for m in messages),
+                        '墙上有画面就不该被当成空机器、反被云端的空配置覆盖')
 
     def test_a_rejected_code_reports_the_failure_and_stays_disabled(self):
         results = []

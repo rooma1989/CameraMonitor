@@ -272,7 +272,10 @@ class CloudSync(QObject):
         self.settings.setValue('cloud/enabled', True)
         self.settings.sync()
 
-        local_count = len(self.names.slot_order()) or 0
+        # 用「这次真要上传的内容」来判方向，而不是 slot_order：
+        # 添加摄像头并不会立刻写入槽位顺序，用后者会把有画面的机器误判成空的。
+        pending = self.collector() or {}
+        local_count = len(pending.get('cameras') or [])
         direction = cloud_state.first_sync_direction(payload, local_count)
 
         self._remember(payload)
