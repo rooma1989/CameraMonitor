@@ -149,6 +149,25 @@ class CloudSyncTest(unittest.TestCase):
         self.assertTrue(any(call[0] == 'push' for call in self.client.calls),
                         '云端为空而本机已有配置时，应当把本机这份传上去')
 
+    def test_uploading_never_applies_the_empty_cloud_configuration_first(self):
+        # 真机上抓到的：登录后本机三台摄像头被云端的空配置抹掉了。
+        # 上传方向的本意就是保留本机这份，绝不能先 apply 一遍云端的空配置。
+        self.collected = {'version': 0, 'layout': {'capacity': 4},
+                          'cameras': [{'ip': '10.0.0.1', 'slot_index': 0},
+                                      {'ip': '10.0.0.2', 'slot_index': 1}]}
+        self.names.save('10.0.0.1', '大门')
+        self.names.save_slot_order(['10.0.0.1', '10.0.0.2'])
+        self.client.login_result = dict(snapshot(cameras=[]), token='cm1.token')
+
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+
+        self.assertEqual([], self.applications,
+                         '上传方向不该把云端配置应用到本机')
+        self.assertEqual('大门', self.names.get('10.0.0.1'), '本机名称必须原封不动')
+        self.assertEqual(['10.0.0.1', '10.0.0.2'], self.names.slot_order(),
+                         '本机画面顺序必须原封不动')
+
     def test_a_machine_with_cameras_but_no_saved_slot_order_still_counts_as_configured(self):
         self.assertEqual([], self.names.slot_order())
         self.collected = {'version': 0, 'layout': {'capacity': 4},

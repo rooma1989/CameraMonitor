@@ -283,7 +283,8 @@ class CloudSync(QObject):
             self._apply(payload)
             message = f'已连接「{self.profile_name()}」，配置来自云端。'
         else:
-            self._apply(payload, announce=False)
+            # 上传方向：本机这份正是要保留的，绝不能先用云端的空配置把它抹掉。
+            # 只记下版本号，等这次上传成功后缓存自然会被结果覆盖。
             message = f'已连接「{self.profile_name()}」，本机配置将上传为该点位的初始配置。'
             self.schedule_push()
 
