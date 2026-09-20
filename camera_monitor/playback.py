@@ -194,6 +194,8 @@ class PlayerWindow(QDialog):
     status_changed = Signal(str)
     settings_hidden = Signal()
     credentials_required = Signal()
+    # 这一格的连接配置有改动（账号密码、传输方式、取流方式、通道、手动地址）
+    connection_changed = Signal()
 
     def __init__(self, device, parent=None, credential_store=None, device_names=None, connection_options=None):
         super().__init__(parent)
@@ -283,6 +285,12 @@ class PlayerWindow(QDialog):
         options.addWidget(self.manual, 1)
         layout.addLayout(options)
         self.mode.currentIndexChanged.connect(self.update_mode)
+        # 一律用绑定方法，不用 lambda、也不做信号直连信号：只有绑定方法才会被 Qt
+        # 登记为「接收者是这个 QObject」，对象销毁时自动断开。否则子控件的信号在
+        # 窗口已被释放之后仍会触发，processEvents 时就是段错误。
+        self.mode.currentIndexChanged.connect(self.note_connection_change)
+        self.channel.valueChanged.connect(self.note_connection_change)
+        self.manual.editingFinished.connect(self.note_connection_change)
         self.update_mode()
         transport_form = QHBoxLayout()
         transport_form.addWidget(QLabel('传输方式'))
@@ -343,6 +351,9 @@ class PlayerWindow(QDialog):
             self.credential_note.setText(str(exc))
         self.remember.toggled.connect(self.remember_changed)
 
+    def note_connection_change(self, *args):
+        self.connection_changed.emit()
+
     def save_name_appearance(self):
         try:
             self.device_names.save_appearance(self.device.ip, self.name_color.currentData(), self.name_corner.currentData())
@@ -366,6 +377,7 @@ class PlayerWindow(QDialog):
         try:
             self.connection_options.save_transport(self.device.ip, self.transport.currentData())
             self.transport_note.setText('传输方式已保存，下次连接自动使用。')
+            self.connection_changed.emit()
         except OSError:
             self.transport_note.setText('传输方式未保存，本次连接仍可使用所选方式。')
 
@@ -396,6 +408,7 @@ class PlayerWindow(QDialog):
                 self.credential_store.forget(self.device.ip)
                 self._remembered=None
                 self.credential_note.setText('已忘记保存的密码；当前窗口仍可继续连接。')
+                self.connection_changed.emit()
             except CredentialError as exc:
                 self.credential_note.setText(str(exc))
                 self.remember.blockSignals(True)
@@ -512,6 +525,7 @@ class PlayerWindow(QDialog):
             self.credential_store.save(self.device.ip, *current)
             self._remembered = current
             self.credential_note.setText('账号密码已保存到系统安全存储。')
+            self.connection_changed.emit()
             return True
         except CredentialError as exc:
             self.credential_note.setText(str(exc))

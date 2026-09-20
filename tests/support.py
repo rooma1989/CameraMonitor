@@ -28,14 +28,33 @@ def isolated_settings(case):
 def make_window(case, **kwargs):
     """Build a Window whose settings are isolated and whose timers stop on cleanup."""
     from camera_monitor.app import Window
+    from camera_monitor.connection_options import ConnectionOptions
     from camera_monitor.device_names import DeviceNames
 
     ini = isolated_settings(case)
     kwargs.setdefault('device_names', DeviceNames(ini('names.ini')))
     kwargs.setdefault('cloud_settings', ini('cloud.ini'))
+    kwargs.setdefault('connection_options', ConnectionOptions(ini('conn.ini')))
 
     window = Window(**kwargs)
     assert not window.cloud.enabled(), '测试不得继承这台机器上真实的云端登录态'
-    case.addCleanup(window.cloud.stop)
-    case.addCleanup(window.thumbnail_timer.stop)
+
+    def shut_down():
+        # 闭包必须抓住 window 本身：只注册 window.cloud.stop 这类绑定方法的话，
+        # 存活的是子对象而不是窗口。
+        #
+        # 而且必须把窗口真正删掉并把事件队列跑空。测试不跑事件循环，窗口析构后
+        # 队列里残留的事件会在后面某个测试调用 processEvents() 时才触发，那时对象
+        # 早已释放——表现就是在完全无关的用例里段错误。
+        from PySide6.QtWidgets import QApplication
+
+        window.cloud.stop()
+        window.thumbnail_timer.stop()
+        window.thumbnails.cancel_all()
+        window.hide()
+        window.setParent(None)
+        window.deleteLater()
+        QApplication.processEvents()
+
+    case.addCleanup(shut_down)
     return window

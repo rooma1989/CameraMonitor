@@ -41,7 +41,7 @@ class SearchWorker(QThread):
 
 
 class Window(QMainWindow):
-    def __init__(self, device_names=None, cloud_settings=None):
+    def __init__(self, device_names=None, cloud_settings=None, connection_options=None):
         super().__init__()
         from .device_names import DeviceNames
         self.device_names = device_names if device_names is not None else DeviceNames()
@@ -134,7 +134,9 @@ class Window(QMainWindow):
         self.detail_toggle.toggled.connect(self.diagnostics.setVisible)
         split.addWidget(sidebar)
         workspace=QWidget();work=self.work_layout=QVBoxLayout(workspace);work.setContentsMargins(0,0,0,0)
-        self.wall=MultiView([],self,embedded=True,device_names=self.device_names)
+        self.connection_options=connection_options if connection_options is not None else ConnectionOptions()
+        self.wall=MultiView([],self,embedded=True,device_names=self.device_names,
+            connection_options=self.connection_options)
         self.wall.playing.connect(self.video_verified)
         self.wall.device_status.connect(self.update_device_status)
         self.wall.fullscreen_requested.connect(self.toggle_fullscreen)
@@ -179,7 +181,7 @@ class Window(QMainWindow):
         self.fullscreen_shortcut=QShortcut(QKeySequence('F11'),self)
         self.fullscreen_shortcut.activated.connect(self.toggle_fullscreen)
         self.thumbnails=ThumbnailController(store=self.wall.credential_store,
-            connection_options=ConnectionOptions(),live_image=self.live_thumbnail,
+            connection_options=self.connection_options,live_image=self.live_thumbnail,
             connection=self.thumbnail_connection,parent=self)
         self.thumbnails.updated.connect(self.update_thumbnail)
         self.table.thumbnailClicked.connect(self.show_thumbnail)
@@ -189,18 +191,24 @@ class Window(QMainWindow):
         self.password_settings.clicked.connect(self.show_password_settings)
         self.wall.toolbar_widget.layout().addWidget(self.password_settings)
         self.applying_cloud=False
-        self.cloud=CloudSync(self.device_names,ConnectionOptions(),self.wall.credential_store,
+        self.cloud=CloudSync(self.device_names,self.connection_options,self.wall.credential_store,
             self.collect_cloud_payload,parent=self,settings=cloud_settings)
         self.cloud.status.connect(self.cloud_panel.set_status)
         self.cloud.applied.connect(self.apply_cloud_config)
         self.cloud.session_changed.connect(self.cloud_session_changed)
         self.cloud.login_result.connect(self.cloud_login_result)
-        self.device_names.changed.connect(lambda *_:self.note_cloud_change())
-        self.device_names.appearance_changed.connect(lambda *_:self.note_cloud_change())
+        # 同样只用绑定方法：device_names 的生命周期可能比窗口长
+        self.device_names.changed.connect(self.note_cloud_change)
+        self.device_names.appearance_changed.connect(self.note_cloud_change)
         self.wall.layout_changed.connect(self.note_cloud_change)
         self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
         self.refresh_networks()
-        QTimer.singleShot(0,self.cloud.start)
+        # 用窗口自己持有的定时器，而不是静态的 QTimer.singleShot：后者排进全局事件
+        # 队列，窗口若在事件循环跑起来之前就被销毁，这个事件仍会触发并访问已释放的对象。
+        self.cloud_start_timer=QTimer(self)
+        self.cloud_start_timer.setSingleShot(True)
+        self.cloud_start_timer.timeout.connect(self.cloud.start)
+        self.cloud_start_timer.start(0)
 
     def show_settings(self, player):
         if self.presentation:return
@@ -581,7 +589,7 @@ class Window(QMainWindow):
         self.cloud_panel.set_status(message,error=not ok)
         self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
 
-    def note_cloud_change(self):
+    def note_cloud_change(self, *args):
         """本机配置有改动就排一次上传；应用云端配置的过程中不回传，避免来回打架。"""
         if not self.applying_cloud:self.cloud.schedule_push()
 

@@ -64,6 +64,8 @@ class CloudSync(QObject):
         self.calls = []
         self.closing = False
         self._relogin_pending = ''
+        # 断网时的改动不能悄悄丢掉：记下来，等连上了补传
+        self.pending_changes = False
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(POLL_INTERVAL_MS)
@@ -206,7 +208,10 @@ class CloudSync(QObject):
 
     def schedule_push(self):
         """配置改动后调用。防抖，避免拖拽过程中连发。"""
-        if self.token and self.enabled() and not self.closing:
+        if not self.enabled() or self.closing:
+            return
+        self.pending_changes = True
+        if self.token:
             self.push_timer.start()
 
     def push_now(self):
@@ -254,9 +259,14 @@ class CloudSync(QObject):
             if int(payload.get('version', 0)) > self.version():
                 self.status.emit('云端配置有更新，正在拉取…')
                 self.refresh()
+            elif self.pending_changes:
+                # 之前断网时改过东西，现在通了，补传
+                self.status.emit(f'{self.profile_name()} · 正在补传离线期间的改动…')
+                self.push_now()
             else:
                 self.status.emit(f'{self.profile_name()} · 已连接')
         elif kind == 'push':
+            self.pending_changes = False
             self._apply(payload, announce=False)
             self._remember(payload)
             self.status.emit(f'{self.profile_name()} · 配置已上传（版本 {payload.get("version")}）')
@@ -297,6 +307,7 @@ class CloudSync(QObject):
         if self.closing:
             return
         # 服务端已经把最新配置一并返回，直接采用，不必再发一次请求
+        self.pending_changes = False
         self._apply(snapshot)
         self._remember(snapshot)
         self.status.emit('配置已在别处更新，已载入最新版本。')
@@ -314,6 +325,14 @@ class CloudSync(QObject):
             self._silent_relogin()
             return
 
+        if failure_code == 'PROFILE_IN_USE':
+            self.poll_timer.stop()
+            self.push_timer.stop()
+            self.token = ''
+            self.session_changed.emit(False)
+            self.status.emit(message)
+            return
+
         if isinstance(failure_code, str) and failure_code in ('PROFILE_DISABLED', 'INVALID_AUTH_CODE'):
             self.poll_timer.stop()
             self.token = ''
@@ -322,7 +341,11 @@ class CloudSync(QObject):
             return
 
         # 网络类失败不改变任何本机状态，墙继续放
-        self.status.emit(f'{self.profile_name() or "云端同步"} · {message}')
+        if kind == 'push':
+            self.pending_changes = True
+            self.status.emit(f'{self.profile_name() or "云端同步"} · {message}改动已保存在本机，联网后自动补传。')
+        else:
+            self.status.emit(f'{self.profile_name() or "云端同步"} · {message}')
 
     def _silent_relogin(self):
         try:

@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from camera_monitor.app import Window
 from camera_monitor.device_names import DeviceNames
 from camera_monitor.discovery import Device
+from support import make_window
 from test_credentials import MemoryVault
 
 
@@ -29,15 +30,8 @@ class CloudWindowTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-        names = DeviceNames(QSettings(os.path.join(folder.name, 'names.ini'),
-                                      QSettings.Format.IniFormat))
-        # 云端设置必须隔离：否则测试会读到这台机器真实的登录态并去联网
-        cloud_settings = QSettings(os.path.join(folder.name, 'cloud.ini'),
-                                   QSettings.Format.IniFormat)
-        self.window = Window(device_names=names, cloud_settings=cloud_settings)
-        self.assertFalse(self.window.cloud.enabled())
-        self.addCleanup(self.window.cloud.stop)
-        self.addCleanup(self.window.thumbnail_timer.stop)
+        # 设置全部注入：QSettings 在 macOS 上没法靠环境变量隔离
+        self.window = make_window(self)
         # 这些用例只验接线，不该去抓真实画面（会留下跑着的网络线程）
         self.window.thumbnails.request = lambda *args, **kwargs: None
 
@@ -112,6 +106,49 @@ class CloudWindowTests(unittest.TestCase):
 
         self.assertEqual('admin', camera['username'])
         self.assertEqual('secret', camera['password'])
+
+    def test_every_local_save_asks_for_a_sync(self):
+        """保存即同步：这些动作以前都不会触发上传。"""
+        device = self.device('10.0.0.1')
+        self.window.add_device(device)
+        self.window.wall.add_device(device)
+        player = self.window.wall.tiles[0].player
+
+        pushes = []
+        self.window.cloud.schedule_push = lambda: pushes.append(1)
+
+        def count(action):
+            before = len(pushes)
+            action()
+            return len(pushes) > before
+
+        self.assertTrue(count(lambda: self.window.device_names.save('10.0.0.1', '大门')), '改名')
+        self.assertTrue(count(lambda: self.window.device_names.save_appearance(
+            '10.0.0.1', '#ffff00', 'top-right')), '名称颜色/位置')
+        self.assertTrue(count(lambda: self.window.wall.change_layout(9)), '换布局')
+        self.assertTrue(count(lambda: player.transport.setCurrentIndex(1)), '传输方式')
+        # 这台设备协议是大华，构造时下拉已在第 2 项，改到「手动 RTSP」才是真的变了
+        self.assertEqual(1, player.mode.currentIndex())
+        self.assertTrue(count(lambda: player.mode.setCurrentIndex(2)), '取流方式')
+        self.assertTrue(count(lambda: player.channel.setValue(4)), '大华通道')
+        self.assertTrue(count(lambda: self.window.wall.add_device(self.device('10.0.0.2'))), '添加摄像头')
+
+    def test_saving_camera_credentials_asks_for_a_sync(self):
+        device = self.device('10.0.0.1')
+        self.window.add_device(device)
+        self.window.wall.add_device(device)
+        player = self.window.wall.tiles[0].player
+
+        pushes = []
+        self.window.cloud.schedule_push = lambda: pushes.append(1)
+
+        player.username.setText('admin')
+        player.password.setText('secret')
+        player._verified_credentials = ('admin', 'secret')
+        player.remember.setChecked(True)
+        self.assertTrue(player.save_credentials())
+
+        self.assertTrue(pushes, '保存摄像头密码后必须同步，否则换台电脑还要重新输')
 
     def test_applying_cloud_config_does_not_bounce_straight_back_as_an_upload(self):
         from camera_monitor.cloud_state import AppliedConfig

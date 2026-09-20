@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QWidget,QDialog,QVBoxLayout,QHBoxLayout,QGridLayo
 from .choices import ChoiceButton
 from .playback import PlayerWindow
 from .credentials import CredentialStore
+from .connection_options import ConnectionOptions
 from .device_names import DeviceNames
 from .wall_layout import wall_rectangles, DEFAULT_COLUMNS
 
@@ -22,7 +23,8 @@ class CameraTile(QFrame):
         self.monitor=parent
         self.setAcceptDrops(True)
         self.drag_start=None
-        self.player=PlayerWindow(device,self,credential_store=credential_store,device_names=parent.device_names)
+        self.player=PlayerWindow(device,self,credential_store=credential_store,
+            device_names=parent.device_names,connection_options=parent.connection_options)
         self.player.hosted=True
         self.player.credentials_required.connect(self.show_settings)
         self.player.preview_width=1280
@@ -204,10 +206,13 @@ class MultiView(QDialog):
     tile_removing=Signal(object)
     settings_requested=Signal(object)
 
-    def __init__(self,devices,parent=None,credential_store=None,embedded=False,device_names=None):
+    def __init__(self,devices,parent=None,credential_store=None,embedded=False,device_names=None,
+                 connection_options=None):
         super().__init__(parent)
         self.embedded=embedded
         self.device_names=device_names if device_names is not None else DeviceNames()
+        # 整个窗口共用一份：以前每个 PlayerWindow 各建各的，测试里就会写到真实配置
+        self.connection_options=connection_options if connection_options is not None else ConnectionOptions()
         if embedded:self.setWindowFlags(Qt.WindowType.Widget)
         self.setWindowTitle('Camera Monitor · 多画面监控')
         self.resize(1200,850)
@@ -356,6 +361,9 @@ class MultiView(QDialog):
         settings.setValue('monitor/capacity',self.capacity)
         settings.sync()
 
+    def note_connection_change(self, *args):
+        self.layout_changed.emit()
+
     def save_organization(self):
         from PySide6.QtCore import QSettings
         name=self.organization_input.text().strip()
@@ -399,6 +407,7 @@ class MultiView(QDialog):
         tile.settings_requested.connect(self.settings_requested)
         tile.player.playing.connect(self.playing)
         tile.player.surface.set_stretch(True)
+        tile.player.connection_changed.connect(self.note_connection_change)
         self.tiles.append(tile)
         preferred=self.saved_slots.index(device.ip) if device.ip in self.saved_slots else -1
         index=preferred if 0<=preferred<self.capacity and self.slots[preferred] is None else self.slots.index(None)
@@ -406,6 +415,7 @@ class MultiView(QDialog):
         self.tiles=[t for t in self.slots if t is not None]
         self.relayout()
         self.message.setText(f'已添加 {len(self.tiles)} 台摄像头。点击“全部连接”，或在每格单独连接。')
+        self.layout_changed.emit()
         return True
 
     def schedule_layout(self):

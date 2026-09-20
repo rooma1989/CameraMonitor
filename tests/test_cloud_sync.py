@@ -313,6 +313,46 @@ class CloudSyncTest(unittest.TestCase):
         self.assertEqual(['10.0.0.50'], [d.ip for d in self.applications[-1].devices])
         self.assertTrue(any('已在别处更新' in m for m in self.statuses))
 
+    # ---------- 离线与占用 ----------
+
+    def test_a_change_made_while_offline_is_resent_once_the_link_is_back(self):
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+        self.client.raises['push'] = CloudError('无法连接云端服务，请检查网络或稍后再试。')
+
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+        self.assertTrue(self.sync.pending_changes, '断网时的改动必须记下来')
+        self.assertTrue(any('自动补传' in m for m in self.statuses))
+
+        self.client.calls.clear()
+        self.sync.check_for_updates()
+        self.assertTrue(self.pump(lambda: any(c[0] == 'push' for c in self.client.calls), timeout=6))
+        self.assertTrue(self.settled())
+
+        self.assertFalse(self.sync.pending_changes, '补传成功后标记要清掉')
+
+    def test_changes_made_before_logging_in_are_not_pushed_anywhere(self):
+        self.sync.schedule_push()
+
+        self.assertFalse(self.sync.pending_changes, '没启用云同步时不该积压改动')
+        self.assertEqual([], self.client.calls)
+
+    def test_a_code_taken_by_another_computer_stops_syncing_and_says_so(self):
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+        states = []
+        self.sync.session_changed.connect(states.append)
+        self.client.raises['fetch'] = CloudAuthError(
+            '该授权码已被「一楼值班台」占用，请在后台解绑后再使用。', 'PROFILE_IN_USE')
+
+        self.sync.refresh()
+        self.assertTrue(self.settled())
+
+        self.assertEqual([False], states)
+        self.assertFalse(self.sync.token, '被占用就不该继续用这个令牌')
+        self.assertTrue(any('已被「一楼值班台」占用' in m for m in self.statuses))
+
     # ---------- 令牌过期 ----------
 
     def test_an_expired_token_triggers_a_silent_relogin(self):
