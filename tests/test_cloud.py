@@ -188,6 +188,24 @@ class CloudClientTest(unittest.TestCase):
 
         self.assertNotIn('<html>', str(caught.exception))
 
+    def test_rate_limiting_is_reported_in_our_own_words(self):
+        # 路由限流由框架返回英文 Too Many Attempts.，不能原样显示给现场
+        client, _ = self.client(FakeResponse(429, {'message': 'Too Many Attempts.'}))
+
+        with self.assertRaises(CloudError) as caught:
+            client.login('code12345', 'client-uid-1')
+
+        self.assertIn('过于频繁', str(caught.exception))
+        self.assertNotIn('Too Many Attempts', str(caught.exception))
+
+    def test_a_server_side_crash_does_not_leak_its_message(self):
+        client, _ = self.client(FakeResponse(500, {'message': 'SQLSTATE[42S02]: Base table not found'}))
+
+        with self.assertRaises(CloudError) as caught:
+            client.fetch('token-abc')
+
+        self.assertNotIn('SQLSTATE', str(caught.exception))
+
     def test_a_server_error_without_a_failure_code_is_still_reported(self):
         client, _ = self.client(FakeResponse(500, {'message': 'Server Error'}))
 

@@ -125,4 +125,11 @@ class CloudClient:
         if failure_code in _AUTH_FAILURES or response.status_code in (401, 403):
             raise CloudAuthError(message or '云端登录已失效，请重新输入授权码。', failure_code)
 
+        if response.status_code == 429:
+            # 路由限流返回的是框架的英文提示，不能原样丢给现场
+            raise CloudError('请求过于频繁，请稍等一会儿再试。', failure_code or 'RATE_LIMITED')
+
+        if response.status_code >= 500:
+            raise CloudError('云端服务暂时不可用，请稍后重试。', failure_code)
+
         raise CloudError(message or f'云端服务暂时不可用（HTTP {response.status_code}）。', failure_code)
