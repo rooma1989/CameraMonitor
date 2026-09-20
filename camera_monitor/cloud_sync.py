@@ -12,7 +12,8 @@ import uuid
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal
 
 from . import cloud_state
-from .cloud import CloudAuthError, CloudClient, CloudConflict, CloudError
+from .cloud import (READ_TIMEOUT, CloudAuthError, CloudClient, CloudConflict,
+                    CloudError)
 from .credentials import CloudSessionStore, CredentialError
 
 POLL_INTERVAL_MS = 60_000
@@ -144,11 +145,15 @@ class CloudSync(QObject):
         self.refresh()
 
     def stop(self):
+        """等线程真正结束再放手，否则退出时 Qt 会报 thread still running。"""
         self.closing = True
         self.poll_timer.stop()
         self.push_timer.stop()
         for call in list(self.calls):
-            call.wait(1500)
+            if call.isRunning():
+                # 网络调用本身已有超时上界，这里留足它跑完的时间
+                call.wait(int(READ_TIMEOUT * 1000) + 2000)
+        self.calls.clear()
 
     def busy(self):
         return any(call.isRunning() for call in self.calls)

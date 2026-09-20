@@ -1,6 +1,7 @@
 from __future__ import annotations
 from .choices import ChoiceButton as QComboBox
 
+import platform
 import sys
 import threading
 from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent
@@ -9,6 +10,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QBoxLayout, QInputDialog,
     QAbstractItemView, QPlainTextEdit, QProgressBar, QSplitter, QFrame, QScrollArea, QStackedWidget, QSizePolicy)
+from . import __version__
 from .discovery import Device, interfaces, scan, validate_target_ip
 from .playback import PlayerWindow
 from .device_list import DeviceList
@@ -16,6 +18,9 @@ from .multiview import MultiView
 from .screen_lock import ScreenLock,request_unlock,PasswordSettingsDialog
 from .thumbnails import ThumbnailController,ThumbnailPreview
 from .connection_options import ConnectionOptions
+from .cloud_panel import CloudPanel
+from .cloud_state import camera_entry, layout_entry, stream_mode
+from .cloud_sync import CloudSync
 
 
 class SearchWorker(QThread):
@@ -112,6 +117,10 @@ class Window(QMainWindow):
 
         self.batch_button=QPushButton('批量账号密码');self.batch_button.clicked.connect(self.show_batch_settings)
         side.addWidget(self.batch_button)
+        self.cloud_panel=CloudPanel()
+        self.cloud_panel.login_requested.connect(self.cloud_login)
+        self.cloud_panel.logout_requested.connect(self.cloud_logout)
+        side.addWidget(self.cloud_panel)
         self.detail_toggle=QPushButton('网络与设备详情');self.detail_toggle.setCheckable(True)
         side.addWidget(self.detail_toggle)
         self.diagnostics=QWidget();diagnostic_layout=QVBoxLayout(self.diagnostics)
@@ -179,7 +188,19 @@ class Window(QMainWindow):
         self.password_settings=QPushButton('大屏密码')
         self.password_settings.clicked.connect(self.show_password_settings)
         self.wall.toolbar_widget.layout().addWidget(self.password_settings)
+        self.applying_cloud=False
+        self.cloud=CloudSync(self.device_names,ConnectionOptions(),self.wall.credential_store,
+            self.collect_cloud_payload,parent=self)
+        self.cloud.status.connect(self.cloud_panel.set_status)
+        self.cloud.applied.connect(self.apply_cloud_config)
+        self.cloud.session_changed.connect(self.cloud_session_changed)
+        self.cloud.login_result.connect(self.cloud_login_result)
+        self.device_names.changed.connect(lambda *_:self.note_cloud_change())
+        self.device_names.appearance_changed.connect(lambda *_:self.note_cloud_change())
+        self.wall.layout_changed.connect(self.note_cloud_change)
+        self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
         self.refresh_networks()
+        QTimer.singleShot(0,self.cloud.start)
 
     def show_settings(self, player):
         if self.presentation:return
@@ -532,14 +553,116 @@ class Window(QMainWindow):
         else:
             self.status.setText('搜索完成 · 未收到设备回复。这不代表没有摄像头，请检查下方提示后重新搜索。')
 
+
+    # ---------- 云端同步 ----------
+
+    def cloud_login(self,auth_code):
+        self.cloud.login(auth_code,device_name=platform.node() or '监控屏',app_version=__version__)
+
+    def cloud_logout(self):
+        self.cloud.logout()
+
+    def cloud_session_changed(self,connected):
+        self.cloud_panel.set_connected(connected,self.cloud.profile_name())
+
+    def cloud_login_result(self,ok,message):
+        self.cloud_panel.set_status(message,error=not ok)
+        self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
+
+    def note_cloud_change(self):
+        """本机配置有改动就排一次上传；应用云端配置的过程中不回传，避免来回打架。"""
+        if not self.applying_cloud:self.cloud.schedule_push()
+
+    def collect_cloud_payload(self):
+        if self.wall is None:return None
+        cameras=[]
+        for index,tile in enumerate(self.wall.slots):
+            if tile is None:continue
+            player=tile.player
+            device=player.device
+            try:saved=self.wall.credential_store.load(device.ip)
+            except Exception:saved=None
+            cameras.append(camera_entry(device,slot_index=index,
+                display_name=self.device_names.get(device.ip),
+                name_color=self.device_names.appearance(device.ip)[0],
+                name_corner=self.device_names.appearance(device.ip)[1],
+                transport=player.transport.currentData() or 'tcp',
+                username=saved[0] if saved else '',
+                password=saved[1] if saved else None,
+                stream_mode=stream_mode(player.mode.currentIndex()),
+                dahua_channel=player.channel.value(),
+                manual_url=player.manual.text()))
+        settings=self.device_names.settings
+        columns={}
+        for capacity in (4,9,12,16,20,25):
+            value=settings.value(f'monitor/columns/{capacity}',None)
+            if value not in (None,''):columns[capacity]=value
+        return {'version':self.cloud.version(),
+                'layout':layout_entry(self.wall.capacity,columns,
+                    self.wall._fill_width,settings.value('monitor/organization','') or ''),
+                'cameras':cameras}
+
+    def apply_cloud_config(self,result):
+        """把云端配置落到界面。已经在播的画面尽量不打断。"""
+        if self.wall is None:return
+        self.applying_cloud=True
+        try:
+            self.devices={device.ip:device for device in result.devices}
+            self.table.setRowCount(0)
+            for device in result.devices:
+                row=self.table.rowCount()
+                self.table.insertRow(row)
+                for column,text in enumerate((device.ip,self.device_names.display(device),
+                        device.model or '未提供',' + '.join(device.protocols),'已发现 · 未验证视频')):
+                    self.table.setCellText(row,column,text)
+            self.wall.update_devices(list(self.devices.values()))
+            self.wall.saved_slots=self.device_names.slot_order()
+            wanted=set(self.devices)
+            for tile in list(self.wall.tiles):
+                if tile.player.device.ip not in wanted:self.wall.remove_tile(tile)
+            if result.capacity!=self.wall.capacity:self.wall.change_layout(result.capacity)
+            for device in result.devices:
+                tile=next((t for t in self.wall.tiles if t.player.device.ip==device.ip),None)
+                if tile is None:
+                    if not self.wall.add_device(device):continue
+                    tile=next(t for t in self.wall.tiles if t.player.device.ip==device.ip)
+                self.apply_cloud_stream(tile,result.streams.get(device.ip,{}))
+            self.wall.organization_input.setText(result.organization)
+            self.wall.organization_header.setText(result.organization)
+            self.wall.fill_width.blockSignals(True)
+            self.wall._fill_width=result.fill_width
+            self.wall.fill_width.setChecked(result.fill_width)
+            self.wall.fill_width.blockSignals(False)
+            self.wall.sync_columns_choice()
+            self.wall.relayout()
+            self.filter_devices(self.device_filter.text())
+            for device in self.devices.values():self.thumbnails.request(device)
+        finally:
+            self.applying_cloud=False
+
+    def apply_cloud_stream(self,tile,stream):
+        if not stream:return
+        player=tile.player
+        player.mode.blockSignals(True)
+        player.mode.setCurrentIndex(int(stream.get('mode_index',0)))
+        player.mode.blockSignals(False)
+        player.update_mode()
+        player.channel.setValue(int(stream.get('dahua_channel',1)))
+        player.manual.setText(str(stream.get('manual_url','')))
+        transport=str(stream.get('transport','tcp'))
+        player.transport.blockSignals(True)
+        player.transport.setCurrentIndex(1 if transport=='udp' else 0)
+        player.transport.blockSignals(False)
+
     def closeEvent(self, event):
         if self.presentation and not self.exit_fullscreen():
             event.ignore();return
         self.closing=True
         if self.worker and self.worker.isRunning():self.worker.cancel.set()
+        self.cloud.stop()
         self.thumbnail_timer.stop()
         self.thumbnails.cancel_all()
-        if self.thumbnails.busy():
+        if self.thumbnails.busy() or self.cloud.busy():
             event.ignore();QTimer.singleShot(200,self.close);return
         if self.wall is not None:
             self.wall.close()

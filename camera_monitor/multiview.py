@@ -198,6 +198,7 @@ class WatchCanvas(QWidget):
 
 class MultiView(QDialog):
     playing=Signal(str)
+    layout_changed=Signal()
     device_status=Signal(str,str)
     fullscreen_requested=Signal()
     tile_removing=Signal(object)
@@ -357,6 +358,7 @@ class MultiView(QDialog):
         self.organization_header.setVisible(self.presentation and bool(name))
         self.organization_panel.hide()
         self.schedule_layout()
+        self.layout_changed.emit()
 
     def update_display_mode(self):
         for tile in self.tiles:tile.player.surface.set_stretch(True)
@@ -445,6 +447,7 @@ class MultiView(QDialog):
         self.saved_slots=[t.player.device.ip if t else '' for t in self.slots]
         try:self.device_names.save_slot_order(self.saved_slots)
         except OSError:self.hint.setText('位置已调整，但未能保存到本机。')
+        self.layout_changed.emit()
 
     def move_tile(self,source,index):
         if self.closing or source not in self.tiles or not 0<=index<self.capacity:return False
@@ -476,6 +479,7 @@ class MultiView(QDialog):
         self.fill_width.setChecked(self._fill_width)
         self.fill_width.blockSignals(False)
         self.relayout()
+        self.layout_changed.emit()
 
     def grid_columns(self):
         default=DEFAULT_COLUMNS.get(self.capacity)
@@ -518,6 +522,7 @@ class MultiView(QDialog):
             return False
         self.sync_columns_choice()
         self.relayout()
+        self.layout_changed.emit()
         return True
 
     def change_layout(self,capacity):
@@ -539,7 +544,7 @@ class MultiView(QDialog):
         else:self.featured.setText('一大多小')
         self.featured.blockSignals(False)
         self.sync_columns_choice()
-        self.focused_tile=None;self.relayout();return True
+        self.focused_tile=None;self.relayout();self.layout_changed.emit();return True
 
     def remove_tile(self,tile):
         if self.closing:return
