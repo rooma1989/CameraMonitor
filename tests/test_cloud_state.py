@@ -181,6 +181,23 @@ class ApplyToLocalTests(unittest.TestCase):
         self.assertEqual(['192.168.2.216'], [d.ip for d in result.devices])
         self.assertIn('192.168.2.216', result.credential_failures)
 
+    def test_the_offline_cache_carries_no_passwords(self):
+        cached = cloud_state.cacheable(self.snapshot([self.camera()]))
+
+        self.assertNotIn('password', cached['cameras'][0],
+                         '缓存落在明文 ini 里，密码只能留在钥匙串')
+        self.assertEqual('admin', cached['cameras'][0]['username'])
+        self.assertEqual(4, cached['version'])
+
+    def test_replaying_the_offline_cache_keeps_the_stored_credentials(self):
+        cloud_state.apply_snapshot(self.snapshot([self.camera()]), self.names, self.options, self.store)
+        cached = cloud_state.cacheable(self.snapshot([self.camera()]))
+
+        cloud_state.apply_snapshot(cached, self.names, self.options, self.store)
+
+        self.assertEqual(('admin', 'p@ss 密码'), self.store.load('192.168.2.216'),
+                         '缓存里没有密码，重放时不该把钥匙串里的抹掉')
+
     def test_applying_an_empty_snapshot_clears_the_slot_order(self):
         self.names.save_slot_order(['10.0.0.9'])
 

@@ -3,6 +3,8 @@ import json
 import sys
 
 SERVICE = 'CameraMonitor.camera-login.v1'
+CLOUD_SERVICE = 'CameraMonitor.cloud-session.v1'
+CLOUD_ACCOUNT = 'session'
 
 
 class CredentialError(Exception):
@@ -53,3 +55,32 @@ class CredentialStore:
                 vault.delete_password(SERVICE,device)
         except Exception:
             raise CredentialError('未能删除已保存密码，请检查系统安全存储。') from None
+
+
+class CloudSessionStore(CredentialStore):
+    """云端授权码与令牌。授权码要能静默重登，所以必须和摄像头密码一样进安全存储。"""
+
+    def load_session(self):
+        try:
+            value=self.vault().get_password(CLOUD_SERVICE,CLOUD_ACCOUNT)
+            if value is None:return None
+            obj=json.loads(value)
+            if not isinstance(obj,dict):raise ValueError()
+            return {'auth_code':str(obj.get('auth_code','')),'token':str(obj.get('token',''))}
+        except Exception:
+            raise CredentialError('无法读取云端登录信息，请重新输入授权码。') from None
+
+    def save_session(self,auth_code,token):
+        try:
+            self.vault().set_password(CLOUD_SERVICE,CLOUD_ACCOUNT,
+                json.dumps({'auth_code':auth_code,'token':token},ensure_ascii=False))
+        except Exception:
+            raise CredentialError('云端登录信息未保存：系统安全存储不可用或访问未获允许。') from None
+
+    def clear_session(self):
+        try:
+            vault=self.vault()
+            if vault.get_password(CLOUD_SERVICE,CLOUD_ACCOUNT) is not None:
+                vault.delete_password(CLOUD_SERVICE,CLOUD_ACCOUNT)
+        except Exception:
+            raise CredentialError('未能清除云端登录信息，请检查系统安全存储。') from None

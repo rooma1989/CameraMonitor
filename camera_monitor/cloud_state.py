@@ -102,6 +102,23 @@ def layout_entry(capacity, columns, fill_width, organization) -> dict:
     }
 
 
+def cacheable(snapshot) -> dict:
+    """离线缓存用的副本：剥掉摄像头密码。
+
+    缓存落在 QSettings 的明文 ini / plist 里，密码只能留在系统钥匙串。
+    重放这份缓存时 apply_snapshot 不会碰钥匙串，凭据依然可用。
+    """
+    cameras = []
+    for camera in snapshot.get('cameras') or []:
+        cameras.append({key: value for key, value in camera.items() if key != 'password'})
+    return {
+        'version': snapshot.get('version', 0),
+        'profile': dict(snapshot.get('profile') or {}),
+        'layout': dict(snapshot.get('layout') or {}),
+        'cameras': cameras,
+    }
+
+
 def first_sync_direction(snapshot, local_camera_count) -> str:
     """云端还是空的而本机已经配好，就把本机这份当作模板传上去。"""
     if not (snapshot.get('cameras') or []) and local_camera_count > 0:
@@ -157,16 +174,19 @@ def apply_snapshot(snapshot, names: DeviceNames, options: ConnectionOptions, sto
         except (OSError, ValueError):
             pass
 
-        username = str(camera.get('username') or '')
-        password = str(camera.get('password') or '')
-        try:
-            if username or password:
-                store.save(ip, username, password)
-            else:
-                # 匿名摄像头不在钥匙串里留空记录
-                store.forget(ip)
-        except CredentialError:
-            applied.credential_failures.append(ip)
+        # 与服务端相同的三态：没有 password 键就完全不碰钥匙串。
+        # 离线缓存正是靠这一点——它剥掉了密码，重放时不会把已存的凭据抹掉。
+        if 'password' in camera:
+            username = str(camera.get('username') or '')
+            password = str(camera.get('password') or '')
+            try:
+                if username or password:
+                    store.save(ip, username, password)
+                else:
+                    # 匿名摄像头不在钥匙串里留空记录
+                    store.forget(ip)
+            except CredentialError:
+                applied.credential_failures.append(ip)
 
         applied.devices.append(device_from_camera(camera))
         applied.streams[ip] = {
