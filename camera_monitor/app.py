@@ -41,7 +41,7 @@ class SearchWorker(QThread):
 
 
 class Window(QMainWindow):
-    def __init__(self, device_names=None):
+    def __init__(self, device_names=None, cloud_settings=None):
         super().__init__()
         from .device_names import DeviceNames
         self.device_names = device_names if device_names is not None else DeviceNames()
@@ -190,7 +190,7 @@ class Window(QMainWindow):
         self.wall.toolbar_widget.layout().addWidget(self.password_settings)
         self.applying_cloud=False
         self.cloud=CloudSync(self.device_names,ConnectionOptions(),self.wall.credential_store,
-            self.collect_cloud_payload,parent=self)
+            self.collect_cloud_payload,parent=self,settings=cloud_settings)
         self.cloud.status.connect(self.cloud_panel.set_status)
         self.cloud.applied.connect(self.apply_cloud_config)
         self.cloud.session_changed.connect(self.cloud_session_changed)
@@ -452,6 +452,7 @@ class Window(QMainWindow):
     def add_device(self, device: Device):
         row = list(self.devices).index(device.ip) if device.ip in self.devices else self.table.rowCount()
         self.devices[device.ip] = device
+        self.refresh_tile_device(device)
         if device.ip == self.target_ip:self.target_received = True
         if row == self.table.rowCount():
             self.table.insertRow(row)
@@ -462,6 +463,17 @@ class Window(QMainWindow):
         self.filter_devices(self.device_filter.text())
         if self.table.currentRow() == row:
             self.show_details()
+
+    def refresh_tile_device(self, device):
+        """摄像头被换掉或 ONVIF 地址变了时，画面里那份也要跟着更新，否则连不上。"""
+        if self.wall is None:return
+        for tile in self.wall.tiles:
+            current=tile.player.device
+            if current.ip!=device.ip or current is device:continue
+            for field in ('name','model','manufacturer'):
+                setattr(current,field,getattr(device,field) or getattr(current,field))
+            if device.protocols:current.protocols=list(device.protocols)
+            if device.urls:current.urls=list(device.urls)
 
     def show_details(self):
         row = self.table.currentRow()
@@ -579,7 +591,8 @@ class Window(QMainWindow):
         for index,tile in enumerate(self.wall.slots):
             if tile is None:continue
             player=tile.player
-            device=player.device
+            # 以设备表为准：重新搜索会刷新型号与 ONVIF 地址，画面里那份可能是旧的
+            device=self.devices.get(player.device.ip,player.device)
             try:saved=self.wall.credential_store.load(device.ip)
             except Exception:saved=None
             cameras.append(camera_entry(device,slot_index=index,
