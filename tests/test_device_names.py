@@ -61,7 +61,8 @@ class DeviceNameTests(unittest.TestCase):
             again.decoder = None
 
     def test_rename_updates_list_and_live_title_without_reconnecting(self):
-        window = Window(device_names=self.names)
+        window = Window(device_names=self.names,
+            cloud_settings=QSettings(os.path.join(self.folder.name, 'cloud.ini'), QSettings.Format.IniFormat))
         self.addCleanup(window.close)
         window.wall.credential_store = CredentialStore(MemoryVault())
         window.add_device(Device('192.168.1.234', name='MT5'))

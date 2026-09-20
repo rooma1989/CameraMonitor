@@ -23,7 +23,8 @@ class FullscreenGuardTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         names = DeviceNames(QSettings(self.tmp.name + '/prefs.ini', QSettings.Format.IniFormat))
         with patch('camera_monitor.app.interfaces', return_value=[]):
-            self.window = Window(device_names=names)
+            self.window = Window(device_names=names,
+                cloud_settings=QSettings(self.tmp.name + '/cloud.ini', QSettings.Format.IniFormat))
         self.window.wall.credential_store = CredentialStore(MemoryVault())
         self.addCleanup(self.close_window)
         self.window.show()

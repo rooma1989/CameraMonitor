@@ -4,6 +4,7 @@ import unittest
 from PySide6.QtWidgets import QApplication
 from camera_monitor.app import Window
 from camera_monitor.discovery import Device
+from support import make_window
 
 class WindowTests(unittest.TestCase):
     @classmethod
@@ -11,7 +12,7 @@ class WindowTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_device_update_keeps_one_row_and_copies_ip(self):
-        window = Window()
+        window = make_window(self)
         window.add_device(Device('192.168.1.20', name='Front door', protocols=['ONVIF']))
         window.add_device(Device('192.168.1.20', name='Front door', model='IPC', protocols=['ONVIF', '大华 DHIP']))
         self.assertEqual(window.table.rowCount(), 1)
@@ -22,7 +23,7 @@ class WindowTests(unittest.TestCase):
         window.close()
 
     def test_scan_finish_reenables_controls_and_zero_result_explains_limit(self):
-        window = Window()
+        window = make_window(self)
         window.search.setEnabled(False)
         window.finish_scan()
         self.assertTrue(window.search.isEnabled())
@@ -31,7 +32,7 @@ class WindowTests(unittest.TestCase):
         window.close()
 
     def test_selected_device_update_keeps_accessible_table_items_alive(self):
-        window = Window()
+        window = make_window(self)
         window.add_device(Device('192.168.1.20', name='Door', protocols=['ONVIF']))
         window.table.selectRow(0)
         status_item = window.table.item(0, 4)
@@ -45,7 +46,7 @@ class WindowTests(unittest.TestCase):
     def test_monitor_and_connection_settings_stay_inside_main_window(self):
         from camera_monitor.credentials import CredentialStore
         from test_credentials import MemoryVault
-        window=Window()
+        window=make_window(self)
         self.assertIsNotNone(window.wall)
         self.assertFalse(window.wall.isWindow())
         window.wall.credential_store=CredentialStore(MemoryVault())
@@ -65,7 +66,7 @@ class WindowTests(unittest.TestCase):
     def test_remove_embedded_settings_releases_page_and_keeps_other_tile(self):
         from camera_monitor.credentials import CredentialStore
         from test_credentials import MemoryVault
-        window=Window();window.wall.credential_store=CredentialStore(MemoryVault())
+        window=make_window(self);window.wall.credential_store=CredentialStore(MemoryVault())
         for ip in ('test-a','test-b'):window.add_device(Device(ip))
         window.show()
         window.table.selectRow(0);window.open_player(force_settings=True)
@@ -84,7 +85,7 @@ class WindowTests(unittest.TestCase):
     def test_escape_does_not_destroy_embedded_monitor(self):
         from PySide6.QtTest import QTest
         from PySide6.QtCore import Qt
-        window=Window();window.show()
+        window=make_window(self);window.show()
         wall=window.wall
         wall.stop_all.setFocus()
         QTest.keyClick(wall.stop_all,Qt.Key.Key_Escape)
@@ -95,7 +96,7 @@ class WindowTests(unittest.TestCase):
     def test_settings_overlay_does_not_reduce_video_area(self):
         from camera_monitor.credentials import CredentialStore
         from test_credentials import MemoryVault
-        window=Window();window.wall.credential_store=CredentialStore(MemoryVault())
+        window=make_window(self);window.wall.credential_store=CredentialStore(MemoryVault())
         window.add_device(Device('overlay-test'));window.show();self.app.processEvents()
         before=window.wall.geometry()
         window.table.selectRow(0);window.open_player(force_settings=True);self.app.processEvents()
@@ -108,7 +109,7 @@ class WindowTests(unittest.TestCase):
         from unittest.mock import patch
         from camera_monitor.credentials import CredentialStore
         from test_credentials import MemoryVault
-        window=Window();window.wall.credential_store=CredentialStore(MemoryVault())
+        window=make_window(self);window.wall.credential_store=CredentialStore(MemoryVault())
         window.add_device(Device('anonymous-test'));window.table.selectRow(0)
         window.wall.add_device(window.devices['anonymous-test'])
         player=window.wall.tiles[0].player

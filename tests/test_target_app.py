@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication
 from camera_monitor.app import Window
 from camera_monitor.discovery import Device
 from test_thumbnail_integration import IdleSearch
+from support import make_window
 
 class TargetSearch(IdleSearch):
     def __init__(self, networks, parent=None, target_ip=None):
@@ -18,7 +19,7 @@ class TargetAppTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_target_add_preserves_existing_devices_and_reports_missing_target(self):
-        window = Window()
+        window = make_window(self)
         try:
             window.add_device(Device('192.168.2.220'))
             window.table.selectRow(0)
@@ -37,7 +38,7 @@ class TargetAppTests(unittest.TestCase):
             window.close()
 
     def test_target_success_selects_device_and_opens_settings(self):
-        window = Window()
+        window = make_window(self)
         try:
             with patch('camera_monitor.app.SearchWorker', TargetSearch):
                 window.start_target_scan('192.168.2.216')
@@ -50,7 +51,7 @@ class TargetAppTests(unittest.TestCase):
             window.close()
 
     def test_existing_target_without_new_reply_is_not_reported_as_success(self):
-        window = Window()
+        window = make_window(self)
         try:
             window.add_device(Device('192.168.2.216'))
             with patch('camera_monitor.app.SearchWorker', TargetSearch):
@@ -63,7 +64,7 @@ class TargetAppTests(unittest.TestCase):
             window.close()
 
     def test_invalid_input_does_not_start_search(self):
-        window = Window()
+        window = make_window(self)
         try:
             window.start_target_scan('invalid')
             self.assertIsNone(window.worker)

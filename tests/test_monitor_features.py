@@ -20,7 +20,11 @@ class MonitorFeatures(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
   self.names=DeviceNames(QSettings(self.tmp.name+'/prefs.ini',QSettings.Format.IniFormat))
  def window(self):
-  with patch('camera_monitor.app.interfaces',return_value=[]):w=Window(device_names=self.names)
+  # cloud 设置也必须隔离，否则会继承这台机器真实的登录态并去联网
+  cloud=QSettings(self.tmp.name+'/cloud.ini',QSettings.Format.IniFormat)
+  with patch('camera_monitor.app.interfaces',return_value=[]):
+   w=Window(device_names=self.names,cloud_settings=cloud)
+  assert not w.cloud.enabled()
   w.wall.credential_store=CredentialStore(MemoryVault())
   self.addCleanup(w.close);return w
  def test_fullscreen_hides_chrome_restores_without_replacing_players(self):
