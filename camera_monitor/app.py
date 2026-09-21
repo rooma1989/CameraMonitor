@@ -648,6 +648,8 @@ class Window(QMainWindow):
                     if not self.wall.add_device(device):continue
                     tile=next(t for t in self.wall.tiles if t.player.device.ip==device.ip)
                 self.apply_cloud_stream(tile,result.streams.get(device.ip,{}))
+                # 云端刚把这台的账号密码写进钥匙串，早就建好的那一格还拿着旧的
+                tile.player.reload_credentials()
             self.wall.organization_input.setText(result.organization)
             self.wall.organization_header.setText(result.organization)
             self.wall.fill_width.blockSignals(True)
@@ -660,6 +662,9 @@ class Window(QMainWindow):
             for device in self.devices.values():self.thumbnails.request(device)
         finally:
             self.applying_cloud=False
+        # 配置回来了画面却是黑的，还得人一格一格去点连接。既然摄像头、通道和
+        # 密码都齐了，就直接连上。已经在播的那几格不会被打断。
+        self.wall.connect_all()
 
     def apply_cloud_stream(self,tile,stream):
         if not stream:return

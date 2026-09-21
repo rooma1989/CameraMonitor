@@ -1,4 +1,6 @@
 """Independent camera players arranged in a 4/9 tile monitor wall."""
+import time
+
 from PySide6.QtCore import Qt,QTimer,Signal,QEvent,QMimeData
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (QWidget,QDialog,QVBoxLayout,QHBoxLayout,QGridLayout,
@@ -9,6 +11,10 @@ from .credentials import CredentialStore
 from .connection_options import ConnectionOptions
 from .device_names import DeviceNames
 from .wall_layout import wall_rectangles, DEFAULT_COLUMNS
+
+# 一键重连最多等上一轮网络线程收尾多久。摄像头掉线时 stop 要等读超时跑完；
+# 等过这个点就不再陪着卡住的那一格，先把已经空出来的连上。
+RECONNECT_WAIT_SECONDS = 12
 
 
 class CameraTile(QFrame):
@@ -225,6 +231,10 @@ class MultiView(QDialog):
         self.layout_timer=QTimer(self)
         self.layout_timer.setSingleShot(True)
         self.layout_timer.timeout.connect(self.relayout)
+        self.reconnect_timer=QTimer(self)
+        self.reconnect_timer.setInterval(200)
+        self.reconnect_timer.timeout.connect(self.resume_reconnect)
+        self._reconnect_until=0.0
         self.tiles=[]
         self.slots=[None]*25
         self.saved_slots=self.device_names.slot_order()
@@ -271,10 +281,12 @@ class MultiView(QDialog):
         self.display_mode.setToolTip('等比铺满会裁剪边缘；完整画面保留全部内容，可能留边。')
         self.display_mode.currentIndexChanged.connect(self.update_display_mode)
         toolbar.addWidget(self.display_mode)
-        self.start_all=QPushButton('全部连接')
-        self.start_all.clicked.connect(self.connect_all)
+        self.start_all=QPushButton('一键重连')
+        self.start_all.setToolTip('先停掉全部画面，等网络线程收尾后重新连接。摄像头断网、换过密码之后用这个。')
+        self.start_all.clicked.connect(self.reconnect_all)
         toolbar.addWidget(self.start_all)
-        self.stop_all=QPushButton('全部停止')
+        self.stop_all=QPushButton('一键断开')
+        self.stop_all.setToolTip('停掉全部画面，不改动任何配置。')
         self.stop_all.clicked.connect(self.stop_everything)
         toolbar.addWidget(self.stop_all)
         toolbar.addStretch()
@@ -344,8 +356,6 @@ class MultiView(QDialog):
         if embedded:
             self.choice.hide()
             self.add.hide()
-            self.start_all.hide()
-            self.stop_all.hide()
             self.display_mode.hide()
         self.update_devices(devices)
         self.relayout()
@@ -586,7 +596,25 @@ class MultiView(QDialog):
         for tile in self.tiles:
             if not tile.player.busy():tile.player.connect_camera()
 
+    def reconnect_all(self):
+        """全部断开再全部连上。
+
+        直接调 connect_camera 没用：它看到还有网络线程在跑就会原地返回，
+        所以得先停、等线程真的收尾，再连。一格卡住不能拖着其他格一起黑着，
+        等过上限就先连已经空出来的那些。
+        """
+        self.stop_everything()
+        self._reconnect_until=time.monotonic()+RECONNECT_WAIT_SECONDS
+        self.reconnect_timer.start()
+
+    def resume_reconnect(self):
+        if any(tile.player.busy() for tile in self.tiles) and time.monotonic()<self._reconnect_until:
+            return
+        self.reconnect_timer.stop()
+        self.connect_all()
+
     def stop_everything(self):
+        self.reconnect_timer.stop()
         for tile in self.tiles:tile.player.stop_playback()
 
     def reject(self):
@@ -595,6 +623,7 @@ class MultiView(QDialog):
     def closeEvent(self,event):
         self.closing=True
         self.layout_timer.stop()
+        self.reconnect_timer.stop()
         self.setEnabled(False)
         ready=True
         for tile in self.tiles:

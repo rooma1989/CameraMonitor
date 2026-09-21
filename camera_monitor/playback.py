@@ -340,16 +340,25 @@ class PlayerWindow(QDialog):
         self.timer.timeout.connect(self.render_frame)
         self.timer.start()
         self.password.returnPressed.connect(self.connect_camera)
+        self.reload_credentials()
+        self.remember.toggled.connect(self.remember_changed)
+
+    def reload_credentials(self):
+        """把安全存储里这台设备的账号密码读回输入框。
+
+        云端配置落下来时会更新钥匙串，但早就建好的那一格还拿着旧的那份。
+        不重读一遍，重连用的就还是旧密码。
+        """
         try:
             saved=self.credential_store.load(self.device.ip)
-            if saved:
-                self.username.setText(saved[0]);self.password.setText(saved[1])
-                self.remember.setChecked(True)
-                self._remembered=saved
-                self.credential_note.setText('已从系统安全存储读取此设备的账号密码。')
         except CredentialError as exc:
             self.credential_note.setText(str(exc))
-        self.remember.toggled.connect(self.remember_changed)
+            return
+        if not saved:return
+        self.username.setText(saved[0]);self.password.setText(saved[1])
+        self.remember.blockSignals(True);self.remember.setChecked(True);self.remember.blockSignals(False)
+        self._remembered=saved
+        self.credential_note.setText('已从系统安全存储读取此设备的账号密码。')
 
     def note_connection_change(self, *args):
         self.connection_changed.emit()

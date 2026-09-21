@@ -194,6 +194,7 @@ class CloudApplyDoesNotEchoBackTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.window = make_window(self)
+        # 这些用例只验接线，不该去抓真实画面、也不该真连摄像头
         self.window.thumbnails.request = lambda *args, **kwargs: None
 
     def snapshot(self):
@@ -235,3 +236,24 @@ class CloudApplyDoesNotEchoBackTests(unittest.TestCase):
 
         cloud.push_now()
         self.assertEqual(['push'], sent, '内容没变就不该再传一次，版本号不能白白往上滚')
+
+    def test_the_cloud_configuration_connects_the_cameras_by_itself(self):
+        # 真机上抓到的：重新输入授权码之后配置回来了，画面却全是黑的，
+        # 还得一格一格去点「连接」。配置齐了就该自己连上。
+        self.window.cloud._apply(self.snapshot())
+
+        self.assertEqual([1], self.window.wall.connect_all_calls,
+                         '落地云端配置之后应当自动连接')
+
+    def test_a_tile_that_already_exists_picks_up_the_new_password(self):
+        snapshot = self.snapshot()
+        self.window.cloud._apply(snapshot)
+        tile = self.window.wall.tiles[0]
+        self.assertEqual('pw', tile.player.password.text())
+
+        rotated = self.snapshot()
+        rotated['cameras'][0]['password'] = '换过的新密码'
+        self.window.cloud._apply(rotated)
+
+        self.assertEqual('换过的新密码', tile.player.password.text(),
+                         '早就建好的那一格也得拿到云端刚写下的密码，否则重连还是用旧的')

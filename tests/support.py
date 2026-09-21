@@ -39,6 +39,12 @@ def make_window(case, **kwargs):
     window = Window(**kwargs)
     assert not window.cloud.enabled(), '测试不得继承这台机器上真实的云端登录态'
 
+    # 落地云端配置之后窗口会自动连接摄像头。测试里那是真的开解码线程去连一个
+    # 不存在的地址，线程还没结束窗口就被销毁，Qt 直接 abort——而且往往是在后面
+    # 某个完全无关的用例里炸。这里换成只记账，要验自动连接就读 connect_all_calls。
+    window.wall.connect_all_calls = []
+    window.wall.connect_all = lambda: window.wall.connect_all_calls.append(1)
+
     def shut_down():
         # 闭包必须抓住 window 本身：只注册 window.cloud.stop 这类绑定方法的话，
         # 存活的是子对象而不是窗口。
