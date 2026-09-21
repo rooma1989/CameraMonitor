@@ -1,3 +1,3 @@
 """Local camera discovery desktop client."""
 
-__version__ = '0.8.0'
+__version__ = '0.8.1'
