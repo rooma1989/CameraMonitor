@@ -5,6 +5,7 @@ Kept free of widgets so the mapping can be tested on its own; the orchestration
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from .connection_options import ConnectionOptions
@@ -216,3 +217,15 @@ def _save_layout(names: DeviceNames, layout) -> None:
         value = layout['columns'].get(str(capacity))
         settings.setValue(key, value) if value else settings.remove(key)
     settings.sync()
+
+
+def config_fingerprint(layout, cameras) -> str:
+    """把「这份配置长什么样」压成一个可比较的串。
+
+    只看内容，不看键的顺序、摄像头的排列先后。用来判断这次要传的东西和上次
+    传上去的是不是一模一样——一样就没必要再传，服务端每收一次都会把版本号加一。
+    """
+    ordered = sorted((dict(camera) for camera in cameras or []),
+                     key=lambda camera: (str(camera.get('ip', '')), int(camera.get('slot_index', 0) or 0)))
+    return json.dumps({'layout': dict(layout or {}), 'cameras': ordered},
+                      ensure_ascii=False, sort_keys=True)

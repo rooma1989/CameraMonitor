@@ -66,6 +66,12 @@ class CloudSync(QObject):
         self._relogin_pending = ''
         # 断网时的改动不能悄悄丢掉：记下来，等连上了补传
         self.pending_changes = False
+        # 正在把云端配置往本机写。这期间本机存储发出的「变了」全是我们自己写的，
+        # 不能当成用户的改动再传回去——那就成了死循环。
+        self.applying = False
+        # 上一次成功传上去的那份长什么样。一模一样就不再传——服务端每收一次
+        # 都会把版本号加一，多发的每一次都会被人看成「它又在上传了」。
+        self.last_pushed = ''
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(POLL_INTERVAL_MS)
@@ -184,6 +190,7 @@ class CloudSync(QObject):
         self.poll_timer.stop()
         self.push_timer.stop()
         self.token = ''
+        self.last_pushed = ''
         try:
             self.session.clear_session()
         except CredentialError:
@@ -208,7 +215,7 @@ class CloudSync(QObject):
 
     def schedule_push(self):
         """配置改动后调用。防抖，避免拖拽过程中连发。"""
-        if not self.enabled() or self.closing:
+        if not self.enabled() or self.closing or self.applying:
             return
         self.pending_changes = True
         if self.token:
@@ -221,8 +228,17 @@ class CloudSync(QObject):
         if payload is None:
             return
         version, layout, cameras = payload['version'], payload['layout'], payload['cameras']
+
+        # 和云端上一份一模一样就别传了。服务端每收一次就把版本号加一，
+        # 一旦哪里多发了一次，版本号会自己滚下去，看着就像「一直在上传」。
+        fingerprint = cloud_state.config_fingerprint(layout, cameras)
+        if fingerprint and fingerprint == self.last_pushed:
+            self.pending_changes = False
+            return
+
         self.status.emit('正在上传配置…')
-        self._dispatch('push', lambda token=self.token: self.client.push(token, version, layout, cameras))
+        self._dispatch('push', lambda token=self.token: self.client.push(token, version, layout, cameras),
+                       context=fingerprint)
 
     # ---------- 调度 ----------
 
@@ -267,6 +283,7 @@ class CloudSync(QObject):
                 self.status.emit(f'{self.profile_name()} · 已连接')
         elif kind == 'push':
             self.pending_changes = False
+            self.last_pushed = self._sender_context()
             self._apply(payload, announce=False)
             self._remember(payload)
             self.status.emit(f'{self.profile_name()} · 配置已上传（版本 {payload.get("version")}）')
@@ -312,6 +329,8 @@ class CloudSync(QObject):
             return
         # 服务端已经把最新配置一并返回，直接采用，不必再发一次请求
         self.pending_changes = False
+        # 云端这份和我们上次传的不是一回事了，下次有改动照常传
+        self.last_pushed = ''
         self._apply(snapshot)
         self._remember(snapshot)
         self.status.emit('配置已在别处更新，已载入最新版本。')
@@ -370,7 +389,13 @@ class CloudSync(QObject):
         self._relogin_pending = ''
 
     def _apply(self, snapshot, announce=True):
-        result = cloud_state.apply_snapshot(snapshot, self.names, self.options, self.store)
-        self.applied.emit(result)
+        # 往本机存储写的时候，DeviceNames 这些会发「变了」的信号，界面那边接着
+        # 就去排上传。云端配置是我们自己刚写进去的，不该再传回去。
+        self.applying = True
+        try:
+            result = cloud_state.apply_snapshot(snapshot, self.names, self.options, self.store)
+            self.applied.emit(result)
+        finally:
+            self.applying = False
         if announce and result.credential_failures:
             self.status.emit('部分摄像头密码未能写入系统安全存储，需要在连接设置中手动输入。')

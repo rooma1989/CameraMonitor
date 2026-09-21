@@ -7,6 +7,7 @@ from unittest.mock import patch
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
+from camera_monitor import cloud_state
 from camera_monitor.app import Window
 from camera_monitor.device_names import DeviceNames
 from camera_monitor.discovery import Device
@@ -172,3 +173,65 @@ class CloudWindowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CloudApplyDoesNotEchoBackTests(unittest.TestCase):
+    """真机上抓到的：登录之后版本号自己往上滚，界面一直写着「配置已上传」。
+
+    云端配置落到本机时会去写 DeviceNames，写就会发「变了」的信号，界面接着
+    排一次上传；服务端每收一次就把版本号加一，返回的新配置又被落到本机……
+    一圈接一圈，谁都没动过配置，它却一直在传。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.vault = MemoryVault()
+        patcher = patch('camera_monitor.credentials.CredentialStore.vault',
+                        lambda _self: self.vault)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.window = make_window(self)
+        self.window.thumbnails.request = lambda *args, **kwargs: None
+
+    def snapshot(self):
+        return {'version': 5,
+                'profile': {'id': 1, 'name': '测试', 'institution_id': 1, 'institution_name': 'X'},
+                'layout': {'capacity': 4, 'columns': {}, 'fill_width': False, 'organization': ''},
+                'cameras': [{'ip': '192.168.1.108', 'slot_index': 0, 'display_name': '大门',
+                             'model': 'M', 'manufacturer': 'X', 'protocols': ['ONVIF'],
+                             'onvif_urls': [], 'stream_mode': 'onvif', 'dahua_channel': 1,
+                             'manual_url': '', 'transport': 'tcp', 'username': 'admin',
+                             'password': 'pw', 'name_color': '#ffffff', 'name_corner': 'top-left'}]}
+
+    def test_applying_the_cloud_configuration_does_not_queue_an_upload(self):
+        cloud = self.window.cloud
+        cloud.settings.setValue('cloud/enabled', True)
+        cloud.token = 'cm1.token'
+        cloud._apply(self.snapshot())
+        for _ in range(50):
+            QApplication.processEvents()
+
+        self.assertFalse(cloud.push_timer.isActive(),
+                         '云端配置是我们自己写进本机的，不该反过来排一次上传')
+        self.assertFalse(cloud.pending_changes,
+                         '也不该被记成「离线期间的改动」，那样一联网还是会传')
+
+    def test_an_unchanged_configuration_is_never_uploaded_twice(self):
+        cloud = self.window.cloud
+        cloud.settings.setValue('cloud/enabled', True)
+        cloud.token = 'cm1.token'
+        sent = []
+        cloud._dispatch = lambda kind, run, context='': sent.append(kind)
+
+        cloud.push_now()
+        self.assertEqual(['push'], sent, '第一次总该传')
+
+        # 服务端确认了这一份
+        payload = cloud.collector()
+        cloud.last_pushed = cloud_state.config_fingerprint(payload['layout'], payload['cameras'])
+
+        cloud.push_now()
+        self.assertEqual(['push'], sent, '内容没变就不该再传一次，版本号不能白白往上滚')
