@@ -59,16 +59,29 @@ class CloudPanel(QWidget):
         self.connected = False
 
     def toggle(self):
+        # exec() 会起一个嵌套事件循环，期间这个方法可能被再次触发（重复点击、
+        # 辅助功能重发的按键等）。此前内层的 finally 会把 self.dialog 置空，
+        # 外层再去读它就是 AttributeError，登录框直接崩掉。
+        if self.dialog is not None:
+            self.dialog.raise_()
+            self.dialog.activateWindow()
+            return
+
         if self.connected:
             self.logout_requested.emit()
             return
-        self.dialog = CloudLoginDialog(self)
+
+        dialog = self.dialog = CloudLoginDialog(self)
         try:
-            if self.dialog.exec() == QDialog.DialogCode.Accepted:
-                self.login_requested.emit(self.dialog.auth_code())
+            # 全程只用局部变量，不依赖 self.dialog 在 exec() 之后还在
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            code = dialog.auth_code()
         finally:
-            dialog, self.dialog = self.dialog, None
+            self.dialog = None
             dialog.deleteLater()
+
+        if accepted:
+            self.login_requested.emit(code)
 
     def set_connected(self, connected, profile_name=''):
         self.connected = connected

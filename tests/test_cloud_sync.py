@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 from camera_monitor.cloud import CloudAuthError, CloudConflict, CloudError
 from camera_monitor.cloud_sync import CloudSync
 from camera_monitor.connection_options import ConnectionOptions
-from camera_monitor.credentials import CloudSessionStore, CredentialStore
+from camera_monitor.credentials import CloudSessionStore, CredentialError, CredentialStore
 from camera_monitor.device_names import DeviceNames
 from test_credentials import MemoryVault
 
@@ -192,6 +192,23 @@ class CloudSyncTest(unittest.TestCase):
 
         self.assertEqual([(False, '授权码不正确')], results)
         self.assertFalse(self.sync.enabled())
+
+    def test_a_session_that_cannot_be_saved_still_connects_this_time(self):
+        # 真机上抓到的：服务端登录已经成功、档案也绑定了，只因为本机钥匙串写不进去，
+        # 客户端就整个报失败。现场会以为没连上，而云端其实已经把这台机器占住了。
+        def refuse(auth_code, token):
+            raise CredentialError('授权码未能保存到系统安全存储。')
+        self.session_store.save_session = refuse
+        results = []
+        self.sync.login_result.connect(lambda ok, msg: results.append((ok, msg)))
+
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+
+        self.assertTrue(results and results[0][0], '存不住授权码不该把登录判成失败')
+        self.assertTrue(self.sync.enabled(), '这一次仍然要能同步')
+        self.assertTrue(any('重新输入授权码' in s for s in self.statuses),
+                        '要讲清楚代价：下次启动得重新输一遍')
 
     # ---------- 启动与离线 ----------
 

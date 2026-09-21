@@ -273,11 +273,15 @@ class CloudSync(QObject):
 
     def _finish_login(self, payload, auth_code):
         self.token = str(payload.get('token', ''))
+
+        # 登录在服务端已经成功、令牌也拿到了。本机存不住授权码只影响「下次启动
+        # 免输入」，不该把整件事判成失败——那样现场会以为没连上，而服务端其实
+        # 已经把这台机器绑定了。
+        persist_warning = ''
         try:
             self.session.save_session(auth_code, self.token)
         except CredentialError as exc:
-            self.login_result.emit(False, str(exc))
-            return
+            persist_warning = f'{exc} 本次仍可正常同步，重启软件后需要重新输入授权码。'
 
         self.settings.setValue('cloud/enabled', True)
         self.settings.sync()
@@ -301,7 +305,7 @@ class CloudSync(QObject):
         self.poll_timer.start()
         self.session_changed.emit(True)
         self.login_result.emit(True, message)
-        self.status.emit(message)
+        self.status.emit(persist_warning or message)
 
     def _on_conflict(self, kind, snapshot):
         if self.closing:
