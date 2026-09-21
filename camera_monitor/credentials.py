@@ -12,11 +12,16 @@ class CredentialError(Exception):
 
 
 def _store(vault, service, account, secret):
-    """写入安全存储；被拒时删掉旧记录再试一次。
+    """写入安全存储；被拒时先读一遍旧记录，再删掉它重写。
 
     macOS 的钥匙串把记录的访问权限绑在写入者的代码签名上。应用每次打包的
     ad-hoc 签名都不同，于是升级之后就覆盖不了上一版写进去的同名记录。
-    直接放弃会让人永远存不上，先删再写才能恢复。
+
+    顺序是实测出来的，不能省：直接删会和直接写一样被拒（-25244），
+    只有先把那条记录读出来，接下来的删和写才放行。
+
+    删成功而写失败，旧密码就没了——但那条记录本来就是写不动的死记录，
+    留着只会让人永远存不上新的。
     """
     try:
         vault.set_password(service, account, secret)
@@ -24,6 +29,7 @@ def _store(vault, service, account, secret):
     except Exception:
         pass
     try:
+        vault.get_password(service, account)
         vault.delete_password(service, account)
     except Exception:
         pass
