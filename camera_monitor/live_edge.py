@@ -46,6 +46,7 @@ class LiveEdge:
         self.first_pts = None
         self.catching_up = False
         self.last_publish = None
+        self.last_publish_pts = None
         self.last_resync = None
         self.behind = 0.0
 
@@ -81,10 +82,18 @@ class LiveEdge:
             self.catching_up = True
             return Decision(publish=False, skip_nonref=True)
 
-        # 正常播放：界面 30Hz 取一次，转得再密也是白转
-        if now - self.last_publish < PUBLISH_INTERVAL - PUBLISH_TOLERANCE:
+        # 正常播放：界面 30Hz 取一次，比这更密地转换是白转。
+        #
+        # 按画面时间戳算间隔，不按墙上时钟：解码器是一阵一阵吐帧的，两帧常常
+        # 前后脚到，用墙钟量就会把第二帧当成「太密」丢掉——实测 25 fps 的流
+        # 只剩一半帧送到界面，画面直接掉到 12 fps。
+        if pts is not None and self.last_publish_pts is not None:
+            if pts - self.last_publish_pts < PUBLISH_INTERVAL - PUBLISH_TOLERANCE:
+                return Decision(publish=False)
+        elif pts is None and now - self.last_publish < PUBLISH_INTERVAL - PUBLISH_TOLERANCE:
             return Decision(publish=False)
         self.last_publish = now
+        self.last_publish_pts = pts
         return Decision(publish=True)
 
     def _may_resync(self, now):
@@ -93,6 +102,6 @@ class LiveEdge:
     def resynced(self):
         """重连之后从头开始算。"""
         # last_resync 要留着，否则重连之后冷却就白设了
-        self.started_at = self.first_pts = self.last_publish = None
+        self.started_at = self.first_pts = self.last_publish = self.last_publish_pts = None
         self.catching_up = False
         self.behind = 0.0

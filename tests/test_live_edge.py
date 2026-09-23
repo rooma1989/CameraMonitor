@@ -121,3 +121,18 @@ class LiveEdgeTests(unittest.TestCase):
         self.assertGreaterEqual(resyncs, 1, '该重连的时候还是要重连')
         self.assertLessEqual(resyncs, 1 + int(now / 30) + 1,
                              f'两次重连之间至少隔 30 秒，{now:.0f} 秒里重连了 {resyncs} 次')
+
+    def test_a_bursty_stream_still_shows_every_frame(self):
+        # 实测：解码器成对吐帧，两帧前后脚到。按墙上时钟限速的话第二帧会被
+        # 当成「太密」丢掉，25 fps 的流只剩 12 fps 送到界面。
+        edge = LiveEdge()
+        pairs = []
+        for i in range(60):
+            base = i * 0.08
+            pairs.append((base, 100 + i * 0.08))          # 一对里的第一帧
+            pairs.append((base + 0.0005, 100 + i * 0.08 + 0.04))  # 紧跟着的第二帧
+        decisions = self.feed(edge, pairs)
+
+        published = sum(1 for d in decisions if d.publish)
+        self.assertGreaterEqual(published, len(pairs) - 1,
+                                f'25 fps 的流不该被限速丢帧（{len(pairs)} 帧里只出了 {published} 帧）')
