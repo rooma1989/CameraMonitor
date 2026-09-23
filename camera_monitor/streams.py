@@ -85,9 +85,46 @@ def text_of(node, name):
     return next(((n.text or '').strip() for n in node.iter() if local(n) == name), '')
 
 
+# 小于这个面积的档次多半是给缩略图用的（320×240 之类），放到监控墙上太糊。
+# 按面积不按宽度：实测有相机把 Width/Height 报反（Width=1080 Height=1920）。
+MIN_USABLE_PIXELS = 640 * 360
+# 监控墙一格通常也就四五百像素宽，720P 放进去已经绰绰有余。已经拿到这个档次
+# 就别再为了找更小的去多问一轮——实测多问一轮要多等近两秒。
+PREFERRED_MAX_PIXELS = 1280 * 720
+
+
+def profile_size(node):
+    """从一个 profile 里取出编码分辨率。取不到就返回 (0, 0)。"""
+    resolution = next((n for n in node.iter() if local(n) == 'Resolution'), None)
+    if resolution is None:
+        return 0, 0
+    try:
+        return int(text_of(resolution, 'Width') or 0), int(text_of(resolution, 'Height') or 0)
+    except ValueError:
+        return 0, 0
+
+
 def parse_profiles(root):
-    return [(n.attrib['token'], text_of(n, 'Name') or n.attrib['token'])
-            for n in root.iter() if local(n) == 'Profiles' and 'token' in n.attrib]
+    profiles = []
+    for n in root.iter():
+        if local(n) == 'Profiles' and 'token' in n.attrib:
+            width, height = profile_size(n)
+            profiles.append((n.attrib['token'], text_of(n, 'Name') or n.attrib['token'], width, height))
+    return profiles
+
+
+def profile_rank(width, height):
+    """排序用：能用的里面挑最小的排前面。
+
+    监控墙一格才几百像素宽，却默认播主码流，是现场机器带不动、延迟越积越多的
+    根源。小的排前面，主码流仍然留在下拉框里随时可选。
+    """
+    pixels = width * height
+    if not pixels:
+        return (1, 0)          # 相机没报分辨率，保持它自己给的顺序
+    if pixels < MIN_USABLE_PIXELS:
+        return (2, pixels)     # 太糊，排到最后
+    return (0, pixels)
 
 
 def parse_services(root):
@@ -149,6 +186,11 @@ class OnvifClient:
         except requests.RequestException:
             raise StreamError('无法连接 ONVIF 服务，请检查网络、服务端口及协议是否开启。') from None
 
+    @staticmethod
+    def _small_enough(found):
+        pixels = min(rank[1] for rank in (entry[0] for entry in found))
+        return 0 < pixels <= PREFERRED_MAX_PIXELS
+
     def streams(self):
         # Correct WS-Security clock skew without changing the camera clock.
         try:
@@ -168,12 +210,36 @@ class OnvifClient:
         if not services:
             root = self.call(self.endpoint, DEVICE, 'GetCapabilities', '<m:Category>Media</m:Category>')
             services = [(MEDIA1, text_of(n, 'XAddr')) for n in root.iter() if local(n) == 'Media' and text_of(n, 'XAddr')]
-        streams = []
+        best = []
         last_error = None
         for namespace, endpoint in services:
+            if best and self._small_enough(best):
+                # 已经有一路够小的了，再找也省不下多少。这个判断必须在发请求
+                # 之前做——放到 GetProfiles 后面的话，那一轮往返照样白跑。
+                break
+
             try:
                 profiles = parse_profiles(self.call(endpoint, namespace, 'GetProfiles'))
-                for token, name in profiles[:16]:
+            except AuthError:
+                raise
+            except StreamError as exc:
+                last_error = exc
+                continue
+
+            if best:
+                # 第一个服务已经给了地址，只是没得挑。再问下一个服务时，只挑
+                # 「比现在最小的还小、又不至于太糊」的那一档去问——每问一次都是
+                # 一轮网络往返，实测多问一轮要多等两秒半，一面墙十几格都得等。
+                smallest = min(rank for rank, _, _ in best)
+                profiles = sorted(
+                    (entry for entry in profiles if profile_rank(entry[2], entry[3]) < smallest),
+                    key=lambda entry: profile_rank(entry[2], entry[3]))[:1]
+                if not profiles:
+                    continue
+
+            streams = []
+            try:
+                for token, name, width, height in profiles[:16]:
                     if self.cancel.is_set():
                         raise StreamError('连接已取消。')
                     if namespace == MEDIA1:
@@ -190,14 +256,21 @@ class OnvifClient:
                             raise
                         last_error = exc
                         continue
-                    if url not in [s.url for s in streams]:
-                        streams.append(Stream(name, url))
-                if streams:
-                    return streams
+                    known = [found[2] for found in best] + [found[2] for found in streams]
+                    if url not in known:
+                        label = f'{name} · {width}×{height}' if width and height else name
+                        streams.append((profile_rank(width, height), label, url))
             except AuthError:
                 raise
             except StreamError as exc:
                 last_error = exc
-        if streams:
-            return streams
+
+            best.extend(streams)
+            if len(best) > 1:
+                # 有得挑了就不必再问别的服务
+                break
+        if best:
+            # 能用的里面最小的排第一：默认播它，主码流仍在下拉框里
+            best.sort(key=lambda found: found[0])
+            return [Stream(label, url) for _, label, url in best]
         raise last_error or StreamError('没有取得可播放通道。可以使用手动 RTSP 地址连接。')
