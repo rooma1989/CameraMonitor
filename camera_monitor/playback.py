@@ -18,6 +18,23 @@ from .streams import OnvifClient, Stream, StreamError, authenticated_url, same_d
 # FFmpeg errors can include credential-bearing URLs. UI uses authored messages only.
 av.logging.set_level(av.logging.PANIC)
 
+# FFmpeg 默认要探测 5MB / 5 秒才开始解，监控画面用不着这么谨慎：调小之后首帧
+# 更快。实测大华主码流，交替采样各 8 次，中位数 1.59 秒降到 1.34 秒。
+#
+# 试过但没要的：nobuffer、low_delay、max_delay、reorder_queue_size。这几个在
+# 同一台相机上反而让首帧稳定慢到 2.3 秒以上，正反两种顺序各测一遍都一样。
+PROBE_BYTES = '500000'
+PROBE_MICROSECONDS = '1000000'
+
+
+def live_options(transport, full_probe=False):
+    """RTSP 的打开参数。full_probe 用于第一次因为探测太短而认不出流时重试。"""
+    options = {'rtsp_transport': transport, 'rw_timeout': '4000000'}
+    if not full_probe:
+        options['probesize'] = PROBE_BYTES
+        options['analyzeduration'] = PROBE_MICROSECONDS
+    return options
+
 
 class Decoder(QThread):
     ready = Signal(str)
@@ -45,10 +62,14 @@ class Decoder(QThread):
         live = self._url.startswith(('rtsp://', 'rtsps://'))
         retries = 0
         edge = LiveEdge()
+        # 探测时长调小之后，个别相机的流会认不出来。只在这种错误上用完整探测
+        # 重试一次——超时、认证失败之类再试一遍只会让一墙画面多等一轮。
+        full_probe = False
         try:
             while not self.cancel.is_set():
                 retryable = True
                 resyncing = False
+                last_exception = None
                 session_received = False
                 started = time.monotonic()
                 frames = 0
@@ -56,7 +77,7 @@ class Decoder(QThread):
                 stage = '建立连接'
                 error_code = None
                 try:
-                    options = {'rtsp_transport':self.transport, 'rw_timeout':'4000000'} if live else {}
+                    options = live_options(self.transport, full_probe) if live else {}
                     with av.open(self._url, options=options, timeout=(5.0, 4.0)) as source:
                         if not source.streams.video:
                             raise StreamError('此地址没有视频轨道。')
@@ -96,6 +117,7 @@ class Decoder(QThread):
                                 self.ready.emit(f'{frame.width} × {frame.height} · {video.codec_context.name.upper()}')
                         message = '视频流已结束，请重新连接。' if self.received else '已连接，但没有收到可解码的视频帧。'
                 except Exception as exc:
+                    last_exception = exc
                     # Only fixed labels and numeric fields enter diagnostics, never raw errors or URLs.
                     error_code = getattr(exc, 'errno', None)
                     if not isinstance(error_code, int):error_code = None
@@ -115,6 +137,9 @@ class Decoder(QThread):
                         else:
                             message = '视频连接失败或超时，请检查账号密码、RTSP 服务、网络和所选通道。'
                 if self.cancel.is_set(): break
+                if live and not full_probe and not self.received and isinstance(last_exception, av.error.InvalidDataError):
+                    full_probe = True
+                    continue
                 self.diagnostic.emit(f'{datetime.now():%H:%M:%S} · {self.transport.upper()} · {stage} · {cause} · 持续={time.monotonic()-started:.1f}秒 · 帧={frames} · 错误码={error_code if error_code is not None else "无"}')
                 if resyncing:
                     # 不是故障，是我们主动断开去追实时。别吓人，也别等三秒。
