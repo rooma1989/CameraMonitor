@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, Q
 from .credentials import CredentialStore, CredentialError
 from .device_names import DeviceNames
 from .connection_options import ConnectionOptions
+from .live_edge import LiveEdge
 from .streams import OnvifClient, Stream, StreamError, authenticated_url, same_device_url, dahua_streams
 
 # FFmpeg errors can include credential-bearing URLs. UI uses authored messages only.
@@ -43,9 +44,11 @@ class Decoder(QThread):
     def run(self):
         live = self._url.startswith(('rtsp://', 'rtsps://'))
         retries = 0
+        edge = LiveEdge()
         try:
             while not self.cancel.is_set():
                 retryable = True
+                resyncing = False
                 session_received = False
                 started = time.monotonic()
                 frames = 0
@@ -62,14 +65,31 @@ class Decoder(QThread):
                         video.thread_type = 'SLICE'
                         video.codec_context.thread_count = 1
                         stage = '读取视频'
+                        edge.resynced()
+                        skipping = False
                         for frame in source.decode(video):
                             if self.cancel.is_set(): break
-                            width = min(frame.width, self.max_width)
-                            height = max(1, round(frame.height * width / frame.width))
-                            rgb = frame.reformat(width=width, height=height, format='rgb24')
-                            plane = rgb.planes[0]
-                            image = QImage(bytes(plane), width, height, plane.line_size, QImage.Format.Format_RGB888).copy()
-                            with self._lock: self._frame = image
+                            decision = edge.observe(time.monotonic(), frame.time)
+
+                            # 落后太多时让解码器跳过非参考帧，尽快把积压烧掉
+                            if decision.skip_nonref != skipping:
+                                skipping = decision.skip_nonref
+                                video.codec_context.skip_frame = 'NONREF' if skipping else 'DEFAULT'
+
+                            if decision.resync:
+                                # 追不回来了。断开重连，从直播最前沿重新开始，
+                                # 总好过让人一直盯着十秒前的画面。
+                                cause, stage = '落后实时太多，重连追帧', '追帧重连'
+                                resyncing = True
+                                break
+
+                            if decision.publish:
+                                width = min(frame.width, self.max_width)
+                                height = max(1, round(frame.height * width / frame.width))
+                                rgb = frame.reformat(width=width, height=height, format='rgb24')
+                                plane = rgb.planes[0]
+                                image = QImage(bytes(plane), width, height, plane.line_size, QImage.Format.Format_RGB888).copy()
+                                with self._lock: self._frame = image
                             frames += 1
                             if not session_received:
                                 session_received = self.received = True
@@ -96,6 +116,10 @@ class Decoder(QThread):
                             message = '视频连接失败或超时，请检查账号密码、RTSP 服务、网络和所选通道。'
                 if self.cancel.is_set(): break
                 self.diagnostic.emit(f'{datetime.now():%H:%M:%S} · {self.transport.upper()} · {stage} · {cause} · 持续={time.monotonic()-started:.1f}秒 · 帧={frames} · 错误码={error_code if error_code is not None else "无"}')
+                if resyncing:
+                    # 不是故障，是我们主动断开去追实时。别吓人，也别等三秒。
+                    with self._lock: self._frame = None
+                    continue
                 # Only recover a previously verified live stream, never retry bad credentials.
                 if not (live and self.received and retryable):
                     self.error.emit(message)
