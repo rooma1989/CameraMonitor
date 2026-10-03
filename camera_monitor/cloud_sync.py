@@ -49,6 +49,7 @@ class CloudSync(QObject):
     applied = Signal(object)
     session_changed = Signal(bool)
     login_result = Signal(bool, str)
+    mode_changed = Signal(str)
 
     def __init__(self, names, options, store, collector, parent=None,
                  client=None, settings=None, session_store=None):
@@ -93,6 +94,17 @@ class CloudSync(QObject):
 
     def profile_name(self):
         return str(self.settings.value('cloud/profile_name', '') or '')
+
+    def mode(self):
+        value = str(self.settings.value('cloud/mode', 'full') or 'full')
+        return value if value in cloud_state.MODES else 'full'
+
+    def _set_mode(self, mode):
+        if mode == self.mode():
+            return
+        self.settings.setValue('cloud/mode', mode)
+        self.settings.sync()
+        self.mode_changed.emit(mode)
 
     def version(self):
         try:
@@ -199,9 +211,13 @@ class CloudSync(QObject):
         self.settings.remove('cloud/snapshot')
         self.settings.remove('cloud/version')
         self.settings.remove('cloud/profile_name')
+        was_managed = self.mode() == 'managed'
+        self.settings.remove('cloud/mode')
         self.settings.sync()
         self.session_changed.emit(False)
         self.status.emit('已退出云端同步，本机配置保持不变。')
+        if was_managed:
+            self.mode_changed.emit('full')
 
     def refresh(self):
         if not self.token or self.closing:
@@ -213,16 +229,30 @@ class CloudSync(QObject):
             return
         self._dispatch('ping', lambda token=self.token: self.client.ping(token))
 
+    def note_remote_version(self, version):
+        """下行通道说云端有新版本了。比本机新才去拉，旧的、相同的都不理。"""
+        try:
+            version = int(version)
+        except (TypeError, ValueError):
+            return
+        if version > self.version():
+            self.refresh()
+
+    def relogin(self):
+        """下行通道说令牌失效了：和 HTTP 那边一样，用钥匙串里的授权码静默重登。"""
+        if not self._relogin_pending:
+            self._silent_relogin()
+
     def schedule_push(self):
         """配置改动后调用。防抖，避免拖拽过程中连发。"""
-        if not self.enabled() or self.closing or self.applying:
+        if not self.enabled() or self.closing or self.applying or self.mode() == 'managed':
             return
         self.pending_changes = True
         if self.token:
             self.push_timer.start()
 
     def push_now(self):
-        if not self.token or self.closing:
+        if not self.token or self.closing or self.mode() == 'managed':
             return
         payload = self.collector()
         if payload is None:
@@ -307,7 +337,11 @@ class CloudSync(QObject):
         # 添加摄像头并不会立刻写入槽位顺序，用后者会把有画面的机器误判成空的。
         pending = self.collector() or {}
         local_count = len(pending.get('cameras') or [])
-        direction = cloud_state.first_sync_direction(payload, local_count)
+        # 托管点位一律以云端为准：本机就算有摄像头，也不能把后台配的那份顶掉
+        if cloud_state.profile_mode(payload) == 'managed':
+            direction = 'download'
+        else:
+            direction = cloud_state.first_sync_direction(payload, local_count)
 
         self._remember(payload)
         if direction == 'download':
@@ -342,6 +376,13 @@ class CloudSync(QObject):
         if kind == 'login':
             self.login_result.emit(False, message)
             self.status.emit(message)
+            return
+
+        if failure_code == 'MANAGED_PROFILE':
+            # 后台把这里改成了托管：本机的改动作废，去拉最新的那份（里面带着新模式）
+            self.pending_changes = False
+            self.status.emit(message)
+            self.refresh()
             return
 
         if failure_code == 'INVALID_TOKEN' and not self._relogin_pending:
@@ -391,6 +432,8 @@ class CloudSync(QObject):
     def _apply(self, snapshot, announce=True):
         # 往本机存储写的时候，DeviceNames 这些会发「变了」的信号，界面那边接着
         # 就去排上传。云端配置是我们自己刚写进去的，不该再传回去。
+        # 先切模式再落配置：托管模式要先锁好界面，再把全屏之类的设置铺上去
+        self._set_mode(cloud_state.profile_mode(snapshot))
         self.applying = True
         try:
             result = cloud_state.apply_snapshot(snapshot, self.names, self.options, self.store)
