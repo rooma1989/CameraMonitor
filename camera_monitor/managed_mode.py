@@ -126,6 +126,9 @@ class ManagedController(QObject):
         # 搜索一开始会丢掉所有排队的抓图，这里记下被丢掉的，搜完再补
         self.scan_dropped = set()
         self.snapshot_wanted = set()
+        # 远程搜索搜到过的摄像头（ip → Device）。云端配置一落下来，窗口的设备表就被换成
+        # 墙上那几台，刚搜到、还没摆上墙的就从那里消失了；后台要它们的截图时得在这里找
+        self.discovered = {}
         self.seen_playing = set()
         self.last_status = None
         self.last_status_at = 0.0
@@ -191,6 +194,7 @@ class ManagedController(QObject):
         # 离开托管后还在路上的截图、搜索结果都不该再往云端送
         self.snapshot_wanted.clear()
         self.scan_dropped.clear()
+        self.discovered.clear()
         self.seen_playing.clear()
         self.scan_command = None
         self.shortcut.setEnabled(False)
@@ -343,7 +347,10 @@ class ManagedController(QObject):
     def on_scan_completed(self, cancelled):
         command_id, self.scan_command = self.scan_command, None
         dropped, self.scan_dropped = self.scan_dropped, set()
-        if command_id is None or not self.active:
+        if not self.active:
+            return
+        self.discovered.update(self.window.devices)
+        if command_id is None:
             return
         # 先把搜索结果报上去：后面补截图哪里出了错，也不能让后台一直显示「搜索中」
         try:
@@ -395,7 +402,9 @@ class ManagedController(QObject):
         self.window.thumbnails.request(device, self.credentials_for(device.ip))
 
     def known_devices(self):
-        devices = dict(self.window.devices)
+        # 后来的覆盖先前的：设备表、墙上那份比搜索时记下的新
+        devices = dict(self.discovered)
+        devices.update(self.window.devices)
         devices.update({tile.player.device.ip: tile.player.device for tile in self.window.wall.tiles})
         return devices
 

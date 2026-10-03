@@ -338,6 +338,32 @@ class ManagedControllerTests(unittest.TestCase):
         self.assertEqual(('10.0.0.7', ('admin', 'dflt')), self.requests[-1])
         self.assertTrue(self.last('command_done')['ok'])
 
+    def test_scanned_cameras_can_still_be_refreshed_after_a_config_apply(self):
+        # 云端配置落下来会把设备表换成墙上那几台；刚搜到、还没摆上墙的不能就此认不出来
+        self.managed.enter()
+        self.window.run_scan = lambda target_ip=None: True
+        self.command('scan', command_id='s')
+        self.window.devices = {'10.0.0.9': Device('10.0.0.9', model='IPC')}
+        self.window.scan_completed.emit(False)
+        self.window.devices = {'10.0.0.1': Device('10.0.0.1')}
+        self.requests.clear()
+
+        self.command('refresh_snapshots', {'ips': ['10.0.0.9']}, command_id='r')
+
+        self.assertEqual(['10.0.0.9'], [ip for ip, _ in self.requests])
+        self.assertTrue(self.last('command_done')['ok'])
+
+    def test_leaving_forgets_the_scanned_cameras(self):
+        self.managed.enter()
+        self.window.run_scan = lambda target_ip=None: True
+        self.command('scan', command_id='s')
+        self.window.devices = {'10.0.0.9': Device('10.0.0.9')}
+        self.window.scan_completed.emit(False)
+
+        self.managed.leave()
+
+        self.assertEqual({}, self.managed.discovered)
+
     def test_a_wanted_thumbnail_is_uploaded_once(self):
         self.managed.enter()
         self.window.devices = {'10.0.0.7': Device('10.0.0.7')}
