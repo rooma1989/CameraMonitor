@@ -4,11 +4,11 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import time
 import unittest
 
-from PySide6.QtNetwork import QHostAddress
+from PySide6.QtNetwork import QHostAddress, QNetworkProxy, QTcpServer
 from PySide6.QtWebSockets import QWebSocketServer
 from PySide6.QtWidgets import QApplication
 
-from camera_monitor.cloud_channel import CloudChannel, channel_url
+from camera_monitor.cloud_channel import MAX_MESSAGE_BYTES, CloudChannel, channel_url
 
 
 def pump(predicate, timeout=3.0):
@@ -171,6 +171,93 @@ class CloudChannelTests(unittest.TestCase):
         pump(lambda: self.channel.online)
 
         self.assertTrue(pump(lambda: len(self.server.clients) >= 2))
+
+    def test_the_socket_ignores_the_system_proxy(self):
+        # HTTP 客户端刻意不走代理（trust_env=False），下行通道必须一致，
+        # 否则本机开着 SOCKS 代理时 HTTP 通、WebSocket 不通
+        self.assertEqual(QNetworkProxy.ProxyType.NoProxy, self.channel.socket.proxy().type())
+
+    def closed_port_url(self):
+        probe = QTcpServer()
+        self.assertTrue(probe.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHost), 0))
+        port = probe.serverPort()
+        probe.close()
+        return f'ws://127.0.0.1:{port}/api/camera-monitor/ws'
+
+    def test_a_failed_connect_is_logged_once_per_distinct_error(self):
+        self.channel.stop()
+        self.channel = CloudChannel(self.closed_port_url(), lambda: self.hello,
+                                    backoff=(0.05, 0.05), jitter=lambda: 1.0)
+        self.addCleanup(self.channel.stop)
+        attempts = []
+        self.channel.socket.errorOccurred.connect(lambda *_: attempts.append(1))
+
+        with self.assertLogs('camera_monitor.cloud_channel', level='WARNING') as logs:
+            self.channel.start()
+            # 退避 50ms：等到至少连败两次，第二次相同的错误不该再出一条
+            self.assertTrue(pump(lambda: len(attempts) >= 2))
+            idle(0.1)
+
+        self.assertEqual(1, len(logs.records))
+
+    def test_the_error_log_is_reset_after_a_welcome(self):
+        self.channel.start()
+        pump(lambda: self.channel.online)
+        self.channel._last_error = 'stale'
+        self.channel._on_text('{"type":"welcome"}')
+
+        self.assertIsNone(self.channel._last_error)
+
+    def test_ssl_errors_are_logged_but_never_ignored(self):
+        class Err:
+            def __init__(self, text):
+                self.text = text
+
+            def errorString(self):
+                return self.text
+
+        with self.assertLogs('camera_monitor.cloud_channel', level='WARNING') as logs:
+            self.channel._on_ssl_errors([Err('self signed certificate')])
+            self.channel._on_ssl_errors([Err('self signed certificate')])
+
+        self.assertEqual(1, len(logs.records))
+        self.assertIn('self signed certificate', logs.output[0])
+
+    def test_silence_is_noticed_even_before_welcome(self):
+        self.channel.stop()
+        self.server.reply_to_hello = None
+        self.make(heartbeat_ms=50, silence_limit=0.15)
+        self.channel.start()
+
+        self.assertTrue(pump(lambda: len(self.server.clients) >= 2))
+        # 服务端对没通过 hello 的连接收到非 hello 会直接关，欢迎前不能发 ping
+        self.assertNotIn('ping', [m['type'] for m in self.server.received])
+
+    def test_reopening_while_online_does_not_start_a_retry_race(self):
+        self.channel.start()
+        pump(lambda: self.channel.online)
+
+        self.channel._open()
+        idle(0.5)
+
+        self.assertLessEqual(len(self.server.clients), 2)
+        self.assertTrue(self.channel.online)
+
+    def test_the_incoming_message_size_is_capped(self):
+        self.assertEqual(MAX_MESSAGE_BYTES, self.channel.socket.maxAllowedIncomingMessageSize())
+        self.assertEqual(MAX_MESSAGE_BYTES, self.channel.socket.maxAllowedIncomingFrameSize())
+
+    def test_revoked_stops_the_channel_by_itself(self):
+        self.channel.start()
+        pump(lambda: self.channel.online)
+
+        self.server.send({'type': 'revoked'})
+        self.server.clients[-1].close()
+
+        self.assertTrue(pump(lambda: any(m['type'] == 'revoked' for m in self.messages)))
+        idle(0.3)
+        self.assertFalse(self.channel.running)
+        self.assertEqual(1, len(self.server.clients))
 
 
 if __name__ == '__main__':

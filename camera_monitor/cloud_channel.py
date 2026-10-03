@@ -6,13 +6,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import time
 from urllib.parse import urlsplit, urlunsplit
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
-from PySide6.QtNetwork import QAbstractSocket
+from PySide6.QtNetwork import QAbstractSocket, QNetworkProxy
 from PySide6.QtWebSockets import QWebSocket
+
+logger = logging.getLogger(__name__)
 
 BACKOFF_SECONDS = (1, 2, 4, 8, 16, 32, 60)
 HEARTBEAT_MS = 30_000
@@ -49,12 +52,21 @@ class CloudChannel(QObject):
         self.online = False
         self.attempt = 0
         self.last_heard = 0.0
+        # 上一次记进日志的错误：长时间连不上时每轮退避都是同一个错，只记第一次
+        self._last_error = None
 
         self.socket = QWebSocket()
         self.socket.setParent(self)
+        # HTTP 客户端刻意不走系统代理（trust_env=False），这里必须一致：
+        # QWebSocket 默认会用系统代理，本机开着 SOCKS 代理时 HTTP 通而下行连不上
+        self.socket.setProxy(QNetworkProxy(QNetworkProxy.ProxyType.NoProxy))
+        # 限制单条消息大小，免得对端发超大消息时 Qt 先全部缓冲进内存
+        self.socket.setMaxAllowedIncomingMessageSize(MAX_MESSAGE_BYTES)
+        self.socket.setMaxAllowedIncomingFrameSize(MAX_MESSAGE_BYTES)
         self.socket.connected.connect(self._on_connected)
         self.socket.disconnected.connect(self._on_disconnected)
         self.socket.errorOccurred.connect(self._on_error)
+        self.socket.sslErrors.connect(self._on_ssl_errors)
         self.socket.textMessageReceived.connect(self._on_text)
 
         self.retry_timer = QTimer(self)
@@ -93,6 +105,9 @@ class CloudChannel(QObject):
             return
         if self.socket.state() != QAbstractSocket.SocketState.UnconnectedState:
             self.socket.abort()
+            # abort 会同步触发 disconnected 并排上一次重试，和下面这次 open
+            # 撞车会连出两条连接；这里已经亲自重连了，把那次重试撤掉
+            self.retry_timer.stop()
         self.socket.open(QUrl(self.url))
 
     def _on_connected(self):
@@ -103,6 +118,8 @@ class CloudChannel(QObject):
             return
         self.last_heard = self.clock()
         self.socket.sendTextMessage(json.dumps(dict(hello, type='hello'), ensure_ascii=False))
+        # 握手前就开始查连接是否还活着：服务端一直不回 welcome 时也不会干等
+        self.heartbeat.start()
 
     def _on_text(self, text):
         self.last_heard = self.clock()
@@ -117,6 +134,7 @@ class CloudChannel(QObject):
         kind = payload.get('type')
         if kind == 'welcome':
             self.attempt = 0
+            self._last_error = None
             self.heartbeat.start()
             self._set_online(True)
             self.message.emit(payload)
@@ -131,6 +149,11 @@ class CloudChannel(QObject):
             self.running = False
             self.replaced.emit()
             self.socket.close()
+        elif kind == 'revoked':
+            # 设备被后台撤销：先自己停下，免得 message 的接收方还没来得及 stop()
+            # 之前，断线重连又把连接拉起来
+            self.running = False
+            self.message.emit(payload)
         elif kind == 'pong':
             pass
         else:
@@ -141,9 +164,20 @@ class CloudChannel(QObject):
             # 半开连接：TCP 看着还在，其实早断了。主动掐掉，走重连
             self.socket.abort()
             return
+        # 欢迎之前服务端只认 hello，发别的会被直接关掉：未上线时只做静默检查
         self.send({'type': 'ping'})
 
+    def _log_once(self, text):
+        if text and text != self._last_error:
+            self._last_error = text
+            logger.warning('云端下行通道连接失败：%s', text)
+
+    def _on_ssl_errors(self, errors):
+        # 只记录，不调用 ignoreSslErrors：证书不对就是不能连
+        self._log_once('；'.join(e.errorString() for e in errors))
+
     def _on_error(self, *args):
+        self._log_once(self.socket.errorString())
         if self.socket.state() == QAbstractSocket.SocketState.UnconnectedState:
             self._on_disconnected()
 
