@@ -5,7 +5,10 @@ from unittest.mock import MagicMock, patch
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCloseEvent, QWindowStateChangeEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
+
+from camera_monitor.discovery import Interface
 
 from support import make_window
 from test_credentials import MemoryVault
@@ -46,6 +49,19 @@ class ProgrammaticEntryTests(unittest.TestCase):
         self.window.worker.isRunning.return_value = True
 
         self.assertFalse(self.window.run_scan())
+
+    def test_run_scan_refreshes_networks_when_none_were_found_at_startup(self):
+        # 傻瓜模式开机自启可能赶在 DHCP 之前，启动时没读到网卡；远程搜索前要再读一次
+        self.window.networks = []
+        self.window.network.clear()
+        lan = Interface('en0', '192.168.2.10', '192.168.2.255')
+
+        with patch('camera_monitor.app.interfaces', return_value=[lan]), \
+             patch('camera_monitor.app.SearchWorker') as worker:
+            worker.return_value.isRunning.return_value = False
+            self.assertTrue(self.window.run_scan())
+
+        self.assertEqual([lan], worker.call_args.args[0])
 
     def test_finishing_a_scan_is_announced(self):
         results = []
@@ -159,6 +175,86 @@ class ProgrammaticEntryTests(unittest.TestCase):
         # 已经是全屏了，迟到的事件不该再触发任何 showFullScreen
         self.assertEqual([], calls)
         self.assertTrue(self.window.isFullScreen())
+
+
+    def settle(self):
+        for _ in range(5):QApplication.processEvents()
+
+    def leave_while_the_fullscreen_animation_runs(self):
+        # macOS 动画期间窗口状态还不是全屏，showMaximized() 被 Qt 当成没变化忽略掉；
+        # 这里把它换成只记账、什么也不做，模拟那次被吞掉的请求
+        self.window.set_managed_fullscreen(True)
+        self.settle()
+        maximize = []
+        self.window.showMaximized = lambda: maximize.append(1)
+        self.window.leave_managed_window()
+        return maximize
+
+    def test_a_fullscreen_animation_finishing_after_leaving_managed_mode_does_not_prompt(self):
+        maximize = self.leave_while_the_fullscreen_animation_runs()
+        self.assertEqual('maximized', self.window.settling_state)
+        maximize.clear()
+
+        with patch('camera_monitor.app.request_unlock', return_value=False) as prompt:
+            # 动画结束，窗口这才报"全屏"
+            self.window.isFullScreen = lambda: True
+            self.window.changeEvent(QWindowStateChangeEvent(Qt.WindowState.WindowMaximized))
+            self.settle()
+            self.assertEqual([1], maximize)
+            self.assertFalse(self.window.presentation)
+            # 再要的那次最大化终于落地
+            self.window.isFullScreen = lambda: False
+            self.window.isMaximized = lambda: True
+            self.window.changeEvent(QWindowStateChangeEvent(Qt.WindowState.WindowFullScreen))
+            self.settle()
+
+        prompt.assert_not_called()
+        self.assertFalse(self.window.presentation)
+        self.assertIsNone(self.window.settling_state)
+        self.assertFalse(self.window.settle_timer.isActive())
+
+    def test_after_settling_the_user_can_still_go_fullscreen_and_needs_the_password_to_leave(self):
+        self.window.set_managed_fullscreen(True)
+        self.settle()
+        self.window.leave_managed_window()
+        self.settle()
+        self.assertIsNone(self.window.settling_state)
+        self.assertFalse(self.window.presentation)
+
+        self.window.toggle_fullscreen()
+        self.settle()
+        self.assertTrue(self.window.presentation)
+        self.assertTrue(self.window.isFullScreen())
+
+        with patch('camera_monitor.app.request_unlock', return_value=False) as prompt:
+            self.window.showNormal()  # 系统把窗口拉出全屏
+            self.settle()
+
+        # offscreen 会把 showNormal / showFullScreen 的状态迟到回放，可能多弹一次；
+        # 这里只关心落定之后又回到了"要密码才能退"的老规矩
+        self.assertTrue(prompt.called)
+        self.assertTrue(self.window.presentation)
+
+    def test_settling_gives_up_after_the_timer_expires(self):
+        self.window.settle_timer.setInterval(1)
+        self.leave_while_the_fullscreen_animation_runs()
+
+        QTest.qWait(50)
+
+        self.assertIsNone(self.window.settling_state)
+        # 落定期过了，再进全屏就按用户自己的演示模式处理
+        self.window.isFullScreen = lambda: True
+        self.window.changeEvent(QWindowStateChangeEvent(Qt.WindowState.WindowMaximized))
+        self.assertTrue(self.window.presentation)
+
+    def test_entering_managed_mode_again_cancels_settling(self):
+        self.leave_while_the_fullscreen_animation_runs()
+        self.assertTrue(self.window.settle_timer.isActive())
+
+        self.window.set_managed_fullscreen(False)
+
+        self.assertIsNone(self.window.settling_state)
+        self.assertFalse(self.window.settle_timer.isActive())
 
 
 if __name__ == '__main__':

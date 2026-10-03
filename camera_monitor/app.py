@@ -67,6 +67,13 @@ class Window(QMainWindow):
         self.presentation = False
         # None：不是傻瓜模式；True / False：云端要求全屏 / 窗口
         self.managed_fullscreen=None
+        # 退出傻瓜模式后等窗口状态落定。macOS 的全屏是 0.5~1 秒的动画，动画期间窗口
+        # 状态还不是全屏；这时 showMaximized() 会被 Qt 当成"已经是这个状态"直接忽略，
+        # 动画结束才报"全屏"，按普通逻辑会被当成用户自己进了演示模式，随后再被拉回
+        # 最大化时弹密码框。落定前遇到全屏就再要一次最大化，等到最大化了才恢复正常判断。
+        self.settling_state=None
+        self.settle_timer=QTimer(self);self.settle_timer.setSingleShot(True);self.settle_timer.setInterval(3000)
+        self.settle_timer.timeout.connect(self.stop_settling)
         self.authorized_quit=False
         self.screen_lock=ScreenLock(self.device_names.settings)
         self.unlock_prompt_active=False
@@ -284,6 +291,8 @@ class Window(QMainWindow):
         if self.managed_fullscreen is not None:return
         if self.presentation:self.exit_fullscreen();return
         self.was_maximized=self.isMaximized()
+        # 用户亲手按的全屏不是动画收尾，别被落定逻辑拉回最大化
+        self.stop_settling()
         self.set_presentation(True);self.showFullScreen()
 
     def live_thumbnail(self,ip):
@@ -345,6 +354,7 @@ class Window(QMainWindow):
     def set_managed_fullscreen(self,enabled):
         """傻瓜模式下全屏与否由云端决定：不弹密码，侧边栏始终收起。"""
         self.managed_fullscreen=bool(enabled)
+        self.stop_settling()
         if not self.presentation:self.set_presentation(True)
         self.authorized_exit=True
         try:
@@ -353,11 +363,15 @@ class Window(QMainWindow):
 
     def leave_managed_window(self):
         self.managed_fullscreen=None
+        self.settling_state='maximized';self.settle_timer.start()
         self.authorized_exit=True
         try:
             self.set_presentation(False)
             self.showMaximized()
         finally:self.authorized_exit=False
+
+    def stop_settling(self):
+        self.settling_state=None;self.settle_timer.stop()
 
     def native_exit_requested(self):
         if self.managed_fullscreen is not None:return
@@ -372,6 +386,11 @@ class Window(QMainWindow):
                 # 傻瓜模式：云端说全屏就一直全屏，被系统退出了就拉回来，不弹密码
                 if self.managed_fullscreen and not self.isFullScreen() and not self.authorized_exit:
                     QTimer.singleShot(0,self.showFullScreen)
+                return
+            if self.settling_state:
+                # 还在等退出傻瓜模式落定：迟到的全屏是动画收尾，不是用户按的，再要一次最大化
+                if self.isFullScreen():QTimer.singleShot(0,self,self.showMaximized)
+                elif self.isMaximized():self.stop_settling()
                 return
             if self.isFullScreen() and not self.presentation:self.set_presentation(True)
             elif not self.isFullScreen() and self.presentation and not self.authorized_exit:
@@ -471,6 +490,8 @@ class Window(QMainWindow):
         """真正去搜。不看界面状态，云端远程搜索也走这里。返回是否真的开始了。"""
         if self.worker and self.worker.isRunning():
             return False
+        # 傻瓜模式开机自启可能赶在 DHCP 之前，那时网卡列表是空的；远程搜索没人去点"刷新网络"
+        if not self.networks:self.refresh_networks()
         net = self.network.currentData()
         networks = [net] if net else self.networks
         self.target_ip = target_ip
