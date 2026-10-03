@@ -43,7 +43,53 @@ class StartupRouteTests(unittest.TestCase):
         self.names.setValue('monitor/capacity', 9)
 
         self.assertEqual(startup.STANDALONE, self.route())
-        self.assertTrue(self.cloud.value(startup.STANDALONE_KEY), '要记下来，下次不再判断')
+        self.assertEqual('true', str(self.cloud.value(startup.STANDALONE_KEY)).lower(), '要记下来，下次不再判断')
+
+    def test_foreign_keys_from_the_platform_are_not_a_previous_install(self):
+        # macOS 的 QSettings 会把系统全局键（AppleLanguages 等）也算进 allKeys()
+        self.names.setValue('AppleLanguages', ['zh-Hans-CN'])
+
+        self.assertEqual(startup.WELCOME, self.route())
+
+    def test_unbinding_a_legacy_computer_returns_to_the_welcome_page(self):
+        # 解绑后相机配置有意保留，名称键还在，但这次必须回到欢迎页
+        self.names.setValue('monitor/capacity', 9)
+        self.assertEqual(startup.STANDALONE, self.route())
+
+        self.assertTrue(startup.clear_standalone(self.cloud))
+
+        self.assertEqual(startup.WELCOME, self.route())
+
+    def test_the_fresh_computer_decision_is_remembered(self):
+        self.assertEqual(startup.WELCOME, self.route())
+        self.assertEqual('false', str(self.cloud.value(startup.STANDALONE_KEY)).lower())
+
+        self.names.setValue('monitor/capacity', 9)  # 之后写入的名称键不能把它翻成单机
+
+        self.assertEqual(startup.WELCOME, self.route())
+
+    def test_each_legacy_group_counts_as_used_before(self):
+        for key in ('names/192.168.1.2', 'appearance/192.168.1.2/color', 'monitor/order'):
+            with self.subTest(key=key):
+                self.cloud.remove(startup.STANDALONE_KEY)
+                self.names.clear()
+                self.names.setValue(key, 'x')
+                self.assertEqual(startup.STANDALONE, self.route())
+
+    def test_choose_and_clear_report_success(self):
+        self.assertTrue(startup.choose_standalone(self.cloud))
+        self.assertTrue(startup.clear_standalone(self.cloud))
+
+    def test_choose_and_clear_report_write_failure(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        # 父目录不存在又建不出来（父路径是个文件），同步必然失败
+        blocker = os.path.join(folder.name, 'blocker')
+        open(blocker, 'w').close()
+        broken = QSettings(os.path.join(blocker, 'cloud.ini'), QSettings.Format.IniFormat)
+
+        self.assertFalse(startup.choose_standalone(broken))
+        self.assertFalse(startup.clear_standalone(broken))
 
 
 if __name__ == '__main__':
