@@ -104,6 +104,10 @@ class CloudSync(QObject):
             return
         self.settings.setValue('cloud/mode', mode)
         self.settings.sync()
+        if mode == 'managed':
+            # 托管点位不上传：切过来时留着的待补传没有意义，还会让每次心跳都误报「补传」
+            self.pending_changes = False
+            self.push_timer.stop()
         self.mode_changed.emit(mode)
 
     def version(self):
@@ -240,8 +244,9 @@ class CloudSync(QObject):
 
     def relogin(self):
         """下行通道说令牌失效了：和 HTTP 那边一样，用钥匙串里的授权码静默重登。"""
-        if not self._relogin_pending:
-            self._silent_relogin()
+        if self.closing or not self.token or self._relogin_pending:
+            return
+        self._silent_relogin()
 
     def schedule_push(self):
         """配置改动后调用。防抖，避免拖拽过程中连发。"""
@@ -296,6 +301,7 @@ class CloudSync(QObject):
             return
 
         if kind == 'login':
+            self._relogin_pending = ''
             self._finish_login(payload, self._sender_context())
         elif kind == 'fetch':
             self._apply(payload)
@@ -374,6 +380,7 @@ class CloudSync(QObject):
             return
 
         if kind == 'login':
+            self._relogin_pending = ''
             self.login_result.emit(False, message)
             self.status.emit(message)
             return
@@ -426,16 +433,17 @@ class CloudSync(QObject):
         self._relogin_pending = code
         self.status.emit('云端登录已过期，正在自动重新登录…')
         uid = self.client_uid()
+        # 一直占着，直到这次登录结束（成功或失败都在 _on_done/_on_failed 里清掉）
         self._dispatch('login', lambda: self.client.login(code, uid), context=code)
-        self._relogin_pending = ''
 
     def _apply(self, snapshot, announce=True):
         # 往本机存储写的时候，DeviceNames 这些会发「变了」的信号，界面那边接着
         # 就去排上传。云端配置是我们自己刚写进去的，不该再传回去。
-        # 先切模式再落配置：托管模式要先锁好界面，再把全屏之类的设置铺上去
-        self._set_mode(cloud_state.profile_mode(snapshot))
         self.applying = True
         try:
+            # 先切模式再落配置：托管模式要先锁好界面，再把全屏之类的设置铺上去
+            # （放在 applying 里面，mode_changed 的处理函数动本机设置也不会排上传）
+            self._set_mode(cloud_state.profile_mode(snapshot))
             result = cloud_state.apply_snapshot(snapshot, self.names, self.options, self.store)
             self.applied.emit(result)
         finally:

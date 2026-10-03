@@ -123,11 +123,93 @@ class ManagedSyncTests(unittest.TestCase):
 
     def test_relogin_uses_the_stored_code(self):
         self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
 
         self.sync.relogin()
         self.assertTrue(self.settled())
 
         self.assertEqual('code-in-vault', self.client.calls[0][1])
+
+    def test_switching_to_managed_drops_a_stale_pending_upload(self):
+        self.sync.token = 'cm1.t'
+        self.settings.setValue('cloud/version', 1)
+        self.sync.pending_changes = True
+        self.sync.push_timer.start()
+        statuses = []
+        self.sync.status.connect(statuses.append)
+
+        self.sync._apply(managed())
+        self.assertFalse(self.sync.pending_changes)
+        self.assertFalse(self.sync.push_timer.isActive())
+
+        self.sync.check_for_updates()
+        self.assertTrue(self.settled())
+
+        self.assertFalse(self.sync.pending_changes)
+        self.assertFalse([s for s in statuses if '补传' in s], statuses)
+
+    def test_concurrent_relogins_dispatch_one_login(self):
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+
+        self.sync.relogin()
+        self.sync.relogin()
+        self.sync.relogin()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(1, self.kinds().count('login'))
+
+    def test_relogin_is_allowed_again_after_success(self):
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+
+        self.sync.relogin()
+        self.assertTrue(self.settled())
+        self.sync.relogin()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(2, self.kinds().count('login'))
+
+    def test_relogin_is_allowed_again_after_failure(self):
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+        self.client.raises['login'] = CloudError('网络不通。', 'NETWORK')
+
+        self.sync.relogin()
+        self.assertTrue(self.settled())
+        self.sync.relogin()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(2, self.kinds().count('login'))
+
+    def test_relogin_after_stop_dispatches_nothing(self):
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+
+        self.sync.stop()
+        self.sync.relogin()
+
+        self.assertEqual([], self.kinds())
+        self.assertEqual([], self.sync.calls)
+
+    def test_relogin_without_a_token_dispatches_nothing(self):
+        self.session_store.save_session('code-in-vault', 'old-token')
+
+        self.sync.relogin()
+
+        self.assertEqual([], self.kinds())
+
+    def test_mode_changed_handlers_run_inside_the_applying_guard(self):
+        self.settings.setValue('cloud/enabled', True)
+        self.sync.token = 'cm1.t'
+        self.sync._apply(managed())
+        self.sync.mode_changed.connect(lambda _mode: self.sync.schedule_push())
+
+        self.sync._apply(snapshot(version=2))
+
+        self.assertEqual('full', self.sync.mode())
+        self.assertFalse(self.sync.pending_changes)
+        self.assertFalse(self.sync.push_timer.isActive())
 
 
 if __name__ == '__main__':
