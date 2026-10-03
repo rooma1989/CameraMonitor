@@ -29,6 +29,13 @@ from .cloud_channel import CloudChannel, channel_url
 from .managed_mode import ManagedController
 from .snapshots import SnapshotUploader
 
+# 后台永久拒绝时给现场看的话：服务端原话面向管理员，这里说清楚该找谁、该做什么
+REVOKED_MESSAGES={
+    'PROFILE_DISABLED':'该设备码已被管理员停用，请联系管理员。',
+    'PROFILE_IN_USE':'该设备码已在另一台电脑上使用，请联系管理员解绑后重试。',
+    'INVALID_AUTH_CODE':'设备码已失效，请重新输入。',
+}
+
 
 class SearchWorker(QThread):
     device = Signal(object)
@@ -220,13 +227,15 @@ class Window(QMainWindow):
         self.cloud.session_changed.connect(self.cloud_session_changed)
         self.cloud.login_result.connect(self.cloud_login_result)
         self.cloud.mode_changed.connect(self.on_cloud_mode)
+        self.cloud.revoked.connect(self.on_cloud_revoked)
         self.channel=CloudChannel(channel_url(getattr(self.cloud.client,'base_url',DEFAULT_BASE_URL)),
             self.channel_hello,parent=self)
         self.channel.message.connect(self.on_channel_message)
         self.channel.denied.connect(self.on_channel_denied)
         self.channel.replaced.connect(self.on_channel_replaced)
-        # 被别处顶掉之后，只有人亲手重新登录才重连；静默重登不算（见 on_channel_replaced）
+        # 被别处顶掉之后，只有人亲手重新登录成功才重连；静默重登不算（见 on_channel_replaced）
         self.channel_replaced=False
+        self.manual_login=False
         self.snapshot_uploader=SnapshotUploader(self.upload_snapshot,self)
         self.managed=ManagedController(self,self.channel,self.snapshot_uploader,
             autostart if autostart is not None else AutoStart())
@@ -673,8 +682,9 @@ class Window(QMainWindow):
     # ---------- 云端同步 ----------
 
     def cloud_login(self,auth_code):
-        # 人亲手输了设备码：哪怕之前被别处顶掉过，这次登录成功也要把通道接回来
-        self.channel_replaced=False
+        # 人亲手输了设备码：哪怕之前被别处顶掉过，这次登录成功也要把通道接回来。
+        # 这里只做记号，等真登上了再放行（见 cloud_session_changed）——输错码不能解除
+        self.manual_login=True
         self.cloud.login(auth_code,device_name=platform.node() or '监控屏',app_version=__version__)
 
     def cloud_logout(self):
@@ -725,7 +735,14 @@ class Window(QMainWindow):
 
     def on_channel_denied(self,failure_code):
         if failure_code=='INVALID_TOKEN':self.cloud.relogin()
+        elif failure_code in REVOKED_MESSAGES and self.managed.active:self.on_cloud_revoked(failure_code)
         else:self.cloud.refresh()
+
+    def on_cloud_revoked(self,failure_code):
+        # 托管电脑被后台永久拒绝：只退出托管不够，设置里的启用、模式、缓存都得清掉，
+        # 否则下次启动又按云端路线锁回旧画面，再被拒一次。完整模式有侧边栏，照原样处理
+        if not self.managed.active:return
+        self.unbind_cloud(REVOKED_MESSAGES.get(failure_code,'该设备码已不可用，请联系管理员。'))
 
     def on_channel_replaced(self):
         # 同一个设备码在别处连上了。通道自己已经不再重连；这里还要挡住之后的静默重登
@@ -733,6 +750,8 @@ class Window(QMainWindow):
         # 配置同步照常走 HTTP，画面不受影响；要接回来就重新输一次设备码，或者重启软件。
         self.channel_replaced=True
         self.channel.stop()
+        # 托管电脑看不到侧边栏，墙上得如实说清楚，不能挂着「正在自动重连」
+        if self.managed.active:self.managed.show_replaced()
         self.cloud_panel.set_status('该设备码已在另一台电脑上登录，本机不再接收云端指令。'
             '如需由本机接管，请重新登录。',error=True)
 
@@ -744,6 +763,8 @@ class Window(QMainWindow):
     def cloud_session_changed(self,connected):
         self.cloud_panel.set_connected(connected,self.cloud.profile_name())
         if connected:
+            # 人亲手登录成功才算接管回来；session_changed(True) 先于 login_result 发出
+            if self.manual_login:self.channel_replaced=False
             if not self.channel_replaced:self.channel.start()
             return
         self.channel.stop()
@@ -753,6 +774,7 @@ class Window(QMainWindow):
             self.show_welcome('云端登录已失效，请重新输入设备码。')
 
     def cloud_login_result(self,ok,message):
+        self.manual_login=False
         self.cloud_panel.set_status(message,error=not ok)
         self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
         if not self.welcome.isHidden():

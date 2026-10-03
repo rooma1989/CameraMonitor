@@ -212,5 +212,109 @@ class ManagedSyncTests(unittest.TestCase):
         self.assertFalse(self.sync.push_timer.isActive())
 
 
+    # ---------- 永久拒绝 ----------
+
+    def test_permanent_denials_announce_a_revocation(self):
+        for code in ('PROFILE_DISABLED', 'PROFILE_IN_USE', 'INVALID_AUTH_CODE'):
+            with self.subTest(code=code):
+                revoked = []
+                self.sync.revoked.connect(revoked.append)
+                self.sync.token = 'cm1.t'
+                self.client.raises['fetch'] = CloudError('不让用了。', code)
+
+                self.sync.refresh()
+                self.assertTrue(self.settled())
+
+                self.assertEqual([code], revoked)
+                self.assertFalse(self.sync.token)
+                self.sync.revoked.disconnect()
+
+    def test_network_failures_are_not_a_revocation(self):
+        revoked = []
+        self.sync.revoked.connect(revoked.append)
+        self.sync.token = 'cm1.t'
+        self.client.raises['fetch'] = CloudError('网络不通。', 'NETWORK')
+
+        self.sync.refresh()
+        self.assertTrue(self.settled())
+
+        self.assertEqual([], revoked)
+
+    def test_a_silent_relogin_that_is_refused_for_good_announces_a_revocation(self):
+        # 令牌过期后静默重登撞上「已停用」：托管电脑没有侧边栏，不报出去就永远锁在旧画面上
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+        revoked = []
+        self.sync.revoked.connect(revoked.append)
+        self.client.raises['login'] = CloudError('该设备码已停用。', 'PROFILE_DISABLED')
+
+        self.sync.relogin()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(['PROFILE_DISABLED'], revoked)
+
+    def test_a_manual_login_refused_is_not_a_revocation(self):
+        revoked = []
+        self.sync.revoked.connect(revoked.append)
+        self.client.raises['login'] = CloudError('设备码不正确。', 'INVALID_AUTH_CODE')
+
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+
+        self.assertEqual([], revoked)
+
+    # ---------- 换码 ----------
+
+    def test_a_new_full_code_clears_a_leftover_managed_mode_and_uploads(self):
+        # 上一次托管会话没退干净（钥匙串条目丢了），设置里还留着 managed
+        self.settings.setValue('cloud/mode', 'managed')
+        self.client.login_result = dict(snapshot(), cameras=[], token='cm1.token')
+
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+
+        self.assertEqual('full', self.sync.mode())
+        self.assertTrue(self.sync.pending_changes)
+        self.assertTrue(self.sync.push_timer.isActive())
+        self.sync.push_timer.stop()
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+        self.assertIn('push', self.kinds())
+
+    # ---------- 退出后到达的结果 ----------
+
+    def test_a_fetch_that_lands_after_logout_is_ignored(self):
+        self.settings.setValue('cloud/enabled', True)
+        self.sync.token = 'cm1.t'
+        applied = []
+        self.sync.applied.connect(applied.append)
+        self.client.fetch_result = managed(version=9)
+
+        self.sync.refresh()
+        self.sync.logout()
+        self.assertTrue(self.settled())
+
+        self.assertEqual([], applied)
+        self.assertIsNone(self.sync.cached_snapshot())
+        self.assertEqual('full', self.sync.mode())
+        self.assertEqual(0, self.sync.version())
+
+    def test_a_ping_or_push_that_lands_after_logout_is_ignored(self):
+        self.settings.setValue('cloud/enabled', True)
+        self.sync.token = 'cm1.t'
+        self.client.ping_result = {'version': 99}
+        applied = []
+        self.sync.applied.connect(applied.append)
+
+        self.sync.check_for_updates()
+        self.sync.push_now()
+        self.sync.logout()
+        self.assertTrue(self.settled())
+
+        self.assertNotIn('fetch', self.kinds(), '已退出，不该再去拉')
+        self.assertEqual([], applied)
+        self.assertIsNone(self.sync.cached_snapshot())
+
+
 if __name__ == '__main__':
     unittest.main()

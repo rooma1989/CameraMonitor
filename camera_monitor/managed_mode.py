@@ -93,6 +93,11 @@ def restart_application():
     QApplication.quit()
 
 
+OFFLINE_TEXT = '云端连接中断，画面正常播放中 · 正在自动重连'
+# 被顶号后通道不再重连，不能再写「正在自动重连」让现场干等
+REPLACED_TEXT = '该设备码已在另一台电脑上登录 · 画面正常播放，本机不再接收云端指令'
+
+
 class ManagedController(QObject):
     def __init__(self, window, channel, uploader, autostart, parent=None,
                  escape=ask_escape, restart=restart_application, clock=time.monotonic):
@@ -123,7 +128,7 @@ class ManagedController(QObject):
         self.waiting.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.waiting.setStyleSheet('background:#0f1829;color:#c9d3e6;font-size:20px;')
         self.waiting.hide()
-        self.offline = QLabel('云端连接中断，画面正常播放中 · 正在自动重连', root)
+        self.offline = QLabel(OFFLINE_TEXT, root)
         self.offline.setStyleSheet('background:rgba(245,158,11,235);color:#1f1300;'
                                    'padding:6px 12px;border-radius:12px;')
         self.offline.hide()
@@ -160,6 +165,7 @@ class ManagedController(QObject):
         self.seen_playing.clear()
         self.last_status = None
         self.cached_code_tail = None
+        self.offline.setText(OFFLINE_TEXT)
         self.status_timer.start()
         self.on_online_changed(self.channel.online)
         self.refresh_overlays()
@@ -178,6 +184,7 @@ class ManagedController(QObject):
         self.shortcut.setEnabled(False)
         self.waiting.hide()
         self.offline.hide()
+        self.offline.setText(OFFLINE_TEXT)
         self.autostart.disable()
         self.window.wall.set_locked(False)
         self.window.leave_managed_window()
@@ -224,6 +231,7 @@ class ManagedController(QObject):
         if online:
             self.offline_timer.stop()
             self.offline.hide()
+            self.offline.setText(OFFLINE_TEXT)
             self.last_status = None
         elif self.active and not self.offline_timer.isActive() and self.offline.isHidden():
             # 抖一下就重连上是常事，10 秒内恢复的不必让现场看到
@@ -232,6 +240,13 @@ class ManagedController(QObject):
     def show_offline(self):
         if not self.active or self.channel.online:
             return
+        self.offline.show()
+        self.refresh_overlays()
+
+    def show_replaced(self):
+        """同一个设备码在别处登录，本机通道让位了：常驻提示，直到重新连上或离开托管。"""
+        self.offline_timer.stop()
+        self.offline.setText(REPLACED_TEXT)
         self.offline.show()
         self.refresh_overlays()
 

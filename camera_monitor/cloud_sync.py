@@ -17,6 +17,8 @@ from .cloud import (READ_TIMEOUT, CloudAuthError, CloudClient, CloudConflict,
 from .credentials import CloudSessionStore, CredentialError
 
 POLL_INTERVAL_MS = 60_000
+# 后台明确不让这个设备码再用了：重试没有意义，只能等人换码或后台恢复
+PERMANENT_FAILURES = ('PROFILE_DISABLED', 'INVALID_AUTH_CODE', 'PROFILE_IN_USE')
 PUSH_DEBOUNCE_MS = 2_000
 
 
@@ -50,6 +52,8 @@ class CloudSync(QObject):
     session_changed = Signal(bool)
     login_result = Signal(bool, str)
     mode_changed = Signal(str)
+    # 带着 failure_code。托管电脑没有侧边栏可以重新登录，界面据此彻底解绑回欢迎页
+    revoked = Signal(str)
 
     def __init__(self, names, options, store, collector, parent=None,
                  client=None, settings=None, session_store=None):
@@ -303,6 +307,10 @@ class CloudSync(QObject):
         if kind == 'login':
             self._relogin_pending = ''
             self._finish_login(payload, self._sender_context())
+        elif not self.token:
+            # 请求发出去之后已经退出（或被解绑）了：结果不能再落到本机，
+            # 否则刚清掉的缓存和模式又被写回来，下次启动又进了云端
+            return
         elif kind == 'fetch':
             self._apply(payload)
             self._remember(payload)
@@ -349,6 +357,14 @@ class CloudSync(QObject):
         else:
             direction = cloud_state.first_sync_direction(payload, local_count)
 
+        # 两个方向都要按这次的点位定模式：上次托管没退干净留下的 managed 会挡住
+        # 上传方向的首次上传。放在 applying 里，mode_changed 的处理函数不会排上传
+        self.applying = True
+        try:
+            self._set_mode(cloud_state.profile_mode(payload))
+        finally:
+            self.applying = False
+
         self._remember(payload)
         if direction == 'download':
             self._apply(payload)
@@ -380,9 +396,14 @@ class CloudSync(QObject):
             return
 
         if kind == 'login':
+            silent = bool(self._relogin_pending)
             self._relogin_pending = ''
             self.login_result.emit(False, message)
             self.status.emit(message)
+            # 只有静默重登才算「被收回」；人手输错码只是这次登录没成功。
+            # 放在 login_result 之后：解绑会显示欢迎页，不能再被服务端原话覆盖
+            if silent and failure_code in PERMANENT_FAILURES:
+                self.revoked.emit(failure_code)
             return
 
         if failure_code == 'MANAGED_PROFILE':
@@ -395,6 +416,11 @@ class CloudSync(QObject):
         if failure_code == 'INVALID_TOKEN' and not self._relogin_pending:
             self._silent_relogin()
             return
+
+        if failure_code in PERMANENT_FAILURES:
+            # 先于 session_changed(False) 发出：界面要先按具体原因解绑，
+            # 否则会先按「登录失效」处理掉托管状态，具体原因就丢了
+            self.revoked.emit(failure_code)
 
         if failure_code == 'PROFILE_IN_USE':
             self.poll_timer.stop()

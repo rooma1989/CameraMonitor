@@ -172,6 +172,94 @@ class ManagedWindowTests(unittest.TestCase):
 
         self.assertEqual([1], self.channel_starts)
 
+    def test_a_failed_manual_login_keeps_the_channel_away(self):
+        self.window.channel.replaced.emit()
+        self.window.cloud.login = lambda *args, **kwargs: None
+
+        self.window.cloud_login('WRONG-CODE')
+        self.window.cloud._on_failed('login', '设备码不正确。', 'INVALID_AUTH_CODE')
+        # 之后的静默重登成功，同样不能把另一台顶掉
+        self.window.cloud_session_changed(True)
+
+        self.assertEqual([], self.channel_starts)
+
+    def test_being_replaced_while_managed_shows_it_on_the_wall(self):
+        self.window.cloud._apply(managed())
+        QApplication.processEvents()
+
+        self.window.channel.replaced.emit()
+
+        banner = self.window.managed.offline
+        self.assertFalse(banner.isHidden())
+        self.assertIn('另一台电脑', banner.text())
+        self.assertFalse(self.window.managed.offline_timer.isActive())
+
+    # ---------- 后台永久拒绝 ----------
+
+    def enter_managed(self):
+        settings = self.window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        self.window.cloud.session.save_session('ABCD-1234', 'cm1.t')
+        self.window.cloud.token = 'cm1.t'
+        self.window.cloud._apply(managed())
+        self.window.cloud._remember(managed())
+        QApplication.processEvents()
+        self.assertTrue(self.window.managed.active)
+
+    def assert_fully_unbound(self, message):
+        settings = self.window.cloud.settings
+        self.assertFalse(self.window.managed.active)
+        self.assertFalse(self.window.cloud.enabled(), '不彻底解绑的话下次启动又锁回旧画面')
+        self.assertEqual('full', self.window.cloud.mode())
+        self.assertIsNone(self.window.cloud.cached_snapshot())
+        self.assertIsNone(self.window.cloud.session.load_session())
+        self.assertFalse(self.window.welcome.isHidden())
+        self.assertEqual(message, self.window.welcome.error.text())
+        self.assertEqual('false', str(settings.value('cloud/standalone')).lower())
+
+    def test_permanent_http_denials_unbind_a_managed_computer(self):
+        cases = {
+            'PROFILE_DISABLED': '该设备码已被管理员停用，请联系管理员。',
+            'PROFILE_IN_USE': '该设备码已在另一台电脑上使用，请联系管理员解绑后重试。',
+            'INVALID_AUTH_CODE': '设备码已失效，请重新输入。',
+        }
+        for code, message in cases.items():
+            with self.subTest(code=code):
+                self.enter_managed()
+
+                self.window.cloud._on_failed('fetch', '服务端原话', code)
+
+                self.assert_fully_unbound(message)
+                # 离开全屏的窗口状态 offscreen 下会晚到，不等它落定就再进托管会乱
+                QApplication.processEvents()
+                self.window.set_welcome_visible(False)
+
+    def test_a_refused_silent_relogin_unbinds_a_managed_computer(self):
+        self.enter_managed()
+        self.window.cloud._relogin_pending = 'ABCD-1234'
+
+        self.window.cloud._on_failed('login', '服务端原话', 'PROFILE_DISABLED')
+
+        self.assert_fully_unbound('该设备码已被管理员停用，请联系管理员。')
+
+    def test_permanent_channel_denials_unbind_a_managed_computer(self):
+        self.enter_managed()
+
+        self.window.on_channel_denied('PROFILE_IN_USE')
+
+        self.assert_fully_unbound('该设备码已在另一台电脑上使用，请联系管理员解绑后重试。')
+
+    def test_permanent_denials_leave_a_full_mode_computer_bound(self):
+        # 完整模式有侧边栏可以重新登录，维持原来的处理：停同步、按钮显示未连接
+        settings = self.window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        self.window.cloud.token = 'cm1.t'
+
+        self.window.cloud._on_failed('fetch', '服务端原话', 'PROFILE_DISABLED')
+
+        self.assertTrue(self.window.cloud.enabled())
+        self.assertTrue(self.window.welcome.isHidden())
+
     # ---------- 退出 ----------
 
     def test_closing_stops_the_channel_before_waiting_for_cloud_calls(self):

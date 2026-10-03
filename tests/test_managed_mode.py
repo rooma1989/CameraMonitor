@@ -454,6 +454,37 @@ class ManagedControllerTests(unittest.TestCase):
         self.managed.on_online_changed(True)
         self.assertTrue(self.managed.offline.isHidden())
 
+    def test_being_replaced_says_so_instead_of_reconnecting(self):
+        # 被顶号后通道不会再重连，「正在自动重连」是在骗人
+        self.managed.enter()
+        self.channel.online = False
+        self.managed.on_online_changed(False)
+
+        self.managed.show_replaced()
+
+        self.assertFalse(self.managed.offline_timer.isActive())
+        self.assertFalse(self.managed.offline.isHidden())
+        self.assertIn('另一台电脑', self.managed.offline.text())
+        self.assertNotIn('重连', self.managed.offline.text())
+
+    def test_the_offline_notice_comes_back_after_being_replaced(self):
+        original = self.managed.offline.text()
+        self.managed.enter()
+        self.managed.show_replaced()
+
+        self.channel.online = True
+        self.managed.on_online_changed(True)
+        self.assertEqual(original, self.managed.offline.text())
+
+        self.managed.show_replaced()
+        self.managed.leave()
+        self.assertEqual(original, self.managed.offline.text())
+        self.assertTrue(self.managed.offline.isHidden())
+
+        self.managed.show_replaced()
+        self.managed.enter()
+        self.assertEqual(original, self.managed.offline.text())
+
     def test_escape_quit(self):
         self.managed.enter()
         closed = []
