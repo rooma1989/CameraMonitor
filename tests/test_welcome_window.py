@@ -28,6 +28,17 @@ class WelcomeWindowTests(unittest.TestCase):
 
         self.assertFalse(window.welcome.isHidden())
 
+    def test_a_computer_that_only_ever_set_a_screen_password_skips_it(self):
+        # v0.8 打开过就会写下大屏密码；名称、分屏都没存过的老电脑也是老用户
+        from camera_monitor.device_names import DeviceNames
+        from support import isolated_settings
+        names = DeviceNames(isolated_settings(self)('names.ini'))
+        names.settings.setValue('fullscreen/password', 'pbkdf2_sha256$old')
+
+        window = make_window(self, fresh_install=True, device_names=names)
+
+        self.assertTrue(window.welcome.isHidden())
+
     def test_a_previous_user_never_sees_it(self):
         window = make_window(self)
 

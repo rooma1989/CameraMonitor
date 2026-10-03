@@ -20,11 +20,14 @@ class StartupRouteTests(unittest.TestCase):
     def test_a_fresh_computer_sees_the_welcome_page(self):
         self.assertEqual(startup.WELCOME, self.route())
 
-    def test_the_default_screen_password_alone_is_not_a_previous_install(self):
-        # ScreenLock 一构造就会写入初始密码，不能因此把新电脑当成老用户
+    def test_a_screen_password_from_an_earlier_version_counts_as_used_before(self):
+        # 以前认为这个键不算数，因为 ScreenLock 一构造就会写入初始密码。但判断只做一次，
+        # 而且 Window 在构造 ScreenLock 之前就判断完了，所以本次进程写的密码根本看不到；
+        # 看得到它，说明这台电脑以前（v0.8 及更早）打开过本程序——那时一启动就写下初始
+        # 密码。哪怕从没存过名称、分屏，也是老用户，升级后不该突然冒出欢迎页
         self.names.setValue('fullscreen/password', 'pbkdf2_sha256$...')
 
-        self.assertEqual(startup.WELCOME, self.route())
+        self.assertEqual(startup.STANDALONE, self.route())
 
     def test_a_logged_in_computer_goes_straight_to_the_cloud(self):
         self.cloud.setValue('cloud/enabled', True)
