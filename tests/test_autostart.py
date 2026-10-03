@@ -1,3 +1,4 @@
+import logging
 import plistlib
 import tempfile
 import unittest
@@ -22,8 +23,14 @@ class FakeRegistry:
 
     def __init__(self):
         self.values = {}
+        self.created = False
 
     def OpenKey(self, root, path, reserved, access):
+        return self._Key()
+
+    def CreateKey(self, root, path):
+        # 真 winreg 里 CreateKey 是"有就打开、没有就建"，返回的句柄可写
+        self.created = True
         return self._Key()
 
     def SetValueEx(self, key, name, reserved, kind, value):
@@ -64,6 +71,32 @@ class WindowsAutoStartTests(unittest.TestCase):
 
         self.assertFalse(self.auto.is_enabled(), '程序挪了位置要重新写')
 
+    def test_enable_creates_the_run_key_instead_of_requiring_it(self):
+        # Run 键在精简系统上可能不存在，OpenKey 会直接 FileNotFoundError
+        self.assertTrue(self.auto.enable())
+
+        self.assertTrue(self.registry.created)
+
+    def test_enable_failure_is_logged_and_returns_false(self):
+        def boom(*args):
+            raise PermissionError('denied')
+        self.registry.CreateKey = boom
+
+        with self.assertLogs('camera_monitor.autostart', level=logging.WARNING) as logs:
+            self.assertFalse(self.auto.enable())
+
+        self.assertIn('PermissionError', '\n'.join(logs.output))
+
+    def test_disable_failure_is_logged_and_returns_false(self):
+        def boom(*args):
+            raise PermissionError('denied')
+        self.registry.OpenKey = boom
+
+        with self.assertLogs('camera_monitor.autostart', level=logging.WARNING) as logs:
+            self.assertFalse(self.auto.disable())
+
+        self.assertIn('PermissionError', '\n'.join(logs.output))
+
 
 class MacAutoStartTests(unittest.TestCase):
     def setUp(self):
@@ -91,6 +124,45 @@ class MacAutoStartTests(unittest.TestCase):
         self.assertTrue(self.auto.disable())
         self.assertTrue(self.auto.disable())
         self.assertFalse(self.auto.is_enabled())
+
+
+    def test_is_enabled_is_false_when_plist_points_at_another_executable(self):
+        self.agents.mkdir(parents=True)
+        with open(self.agents / f'{MAC_LABEL}.plist', 'wb') as fh:
+            plistlib.dump({'Label': MAC_LABEL, 'ProgramArguments': ['/old/place/app', FLAG]}, fh)
+
+        self.assertFalse(self.auto.is_enabled(), '程序挪了位置要重新写')
+
+    def test_is_enabled_is_false_when_plist_is_corrupt(self):
+        self.agents.mkdir(parents=True)
+        (self.agents / f'{MAC_LABEL}.plist').write_bytes(b'not a plist')
+
+        self.assertFalse(self.auto.is_enabled())
+
+    def _auto_at(self, executable):
+        return AutoStart(platform='darwin', executable=executable,
+                         frozen=True, launch_agents=self.agents)
+
+    def test_enable_refuses_app_translocation_path(self):
+        auto = self._auto_at('/private/var/folders/ab/xyz/T/AppTranslocation/'
+                             '1234-UUID/d/Camera Monitor.app/Contents/MacOS/Camera Monitor')
+
+        with self.assertLogs('camera_monitor.autostart', level=logging.WARNING) as logs:
+            self.assertFalse(auto.enable())
+
+        self.assertFalse((self.agents / f'{MAC_LABEL}.plist').exists())
+        self.assertIn('/Applications', '\n'.join(logs.output))
+
+    def test_enable_refuses_mounted_dmg_path(self):
+        auto = self._auto_at('/Volumes/Camera Monitor/Camera Monitor.app/Contents/MacOS/Camera Monitor')
+
+        with self.assertLogs('camera_monitor.autostart', level=logging.WARNING):
+            self.assertFalse(auto.enable())
+
+        self.assertFalse((self.agents / f'{MAC_LABEL}.plist').exists())
+
+    def test_enable_accepts_applications_path(self):
+        self.assertTrue(self.auto.enable())
 
 
 class SourceRunTests(unittest.TestCase):
