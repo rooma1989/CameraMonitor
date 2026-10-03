@@ -22,9 +22,11 @@ class FullscreenGuardTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         names = DeviceNames(QSettings(self.tmp.name + '/prefs.ini', QSettings.Format.IniFormat))
+        cloud = QSettings(self.tmp.name + '/cloud.ini', QSettings.Format.IniFormat)
+        # 模拟选过单机的老用户，否则整个窗口都盖着欢迎页（键盘被禁用，F11 也不响应）
+        cloud.setValue('cloud/standalone', True)
         with patch('camera_monitor.app.interfaces', return_value=[]):
-            self.window = Window(device_names=names,
-                cloud_settings=QSettings(self.tmp.name + '/cloud.ini', QSettings.Format.IniFormat))
+            self.window = Window(device_names=names, cloud_settings=cloud)
         self.window.wall.credential_store = CredentialStore(MemoryVault())
         self.addCleanup(self.close_window)
         self.window.show()

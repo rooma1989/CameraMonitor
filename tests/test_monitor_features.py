@@ -22,6 +22,7 @@ class MonitorFeatures(unittest.TestCase):
  def window(self):
   # cloud 设置也必须隔离，否则会继承这台机器真实的登录态并去联网
   cloud=QSettings(self.tmp.name+'/cloud.ini',QSettings.Format.IniFormat)
+  cloud.setValue('cloud/standalone',True)  # 老用户，不盖欢迎页
   with patch('camera_monitor.app.interfaces',return_value=[]):
    w=Window(device_names=self.names,cloud_settings=cloud)
   assert not w.cloud.enabled()

@@ -31,9 +31,10 @@ class ThumbnailIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.folder=tempfile.TemporaryDirectory()
         self.settings=QSettings(os.path.join(self.folder.name,'test.ini'),QSettings.Format.IniFormat)
+        cloud=QSettings(os.path.join(self.folder.name,'cloud.ini'),QSettings.Format.IniFormat)
+        cloud.setValue('cloud/standalone',True)  # 老用户，不盖欢迎页
         with patch('camera_monitor.app.interfaces',return_value=[]):
-            self.window=Window(device_names=DeviceNames(self.settings),
-                cloud_settings=QSettings(os.path.join(self.folder.name,'cloud.ini'),QSettings.Format.IniFormat))
+            self.window=Window(device_names=DeviceNames(self.settings),cloud_settings=cloud)
         self.window.thumbnail_timer.stop()
 
     def tearDown(self):

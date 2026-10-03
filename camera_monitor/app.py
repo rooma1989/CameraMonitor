@@ -211,8 +211,7 @@ class Window(QMainWindow):
         self.welcome=WelcomePage(root)
         self.welcome.login_requested.connect(self.welcome_login)
         self.welcome.standalone_chosen.connect(self.use_standalone)
-        self.welcome.setVisible(self.startup_route==startup.WELCOME)
-        self.position_overlay()
+        self.set_welcome_visible(self.startup_route==startup.WELCOME)
         # 用窗口自己持有的定时器，而不是静态的 QTimer.singleShot：后者排进全局事件
         # 队列，窗口若在事件循环跑起来之前就被销毁，这个事件仍会触发并访问已释放的对象。
         self.cloud_start_timer=QTimer(self)
@@ -220,8 +219,18 @@ class Window(QMainWindow):
         self.cloud_start_timer.timeout.connect(self.cloud.start)
         self.cloud_start_timer.start(0)
 
+    def set_welcome_visible(self,visible):
+        # 欢迎页只是盖在上面的一层，键盘却会穿过去：Tab 走进看不见的侧边栏，F11 把
+        # 窗口锁进演示模式。所以盖着的时候把下面整块禁用（split 含侧边栏和墙，欢迎页
+        # 是 root 的子控件而不是 split 的，不会被连带禁掉），快捷键也一并关掉。
+        self.split.setEnabled(not visible);self.settings_tab.setEnabled(not visible)
+        self.escape_shortcut.setEnabled(not visible);self.fullscreen_shortcut.setEnabled(not visible)
+        self.welcome.setVisible(visible)
+        if visible:self.position_overlay()
+
     def show_settings(self, player):
-        if self.presentation:return
+        # 欢迎页盖着时不能把设置面板抬到它上面，否则绕过了对下层的禁用
+        if self.presentation or not self.welcome.isHidden():return
         if self.settings_stack.indexOf(player)<0:
             player.setParent(self.settings_stack,Qt.WindowType.Widget)
             player.setMinimumSize(0,0)
@@ -340,7 +349,7 @@ class Window(QMainWindow):
                 QTimer.singleShot(0,self.native_exit_requested)
 
     def show_batch_settings(self):
-        if self.presentation:return
+        if self.presentation or not self.welcome.isHidden():return
         from .batch_settings import BatchSettings
         devices=dict(self.devices)
         devices.update({t.player.device.ip:t.player.device for t in self.wall.tiles})
@@ -601,7 +610,7 @@ class Window(QMainWindow):
 
     def use_standalone(self):
         startup.choose_standalone(self.cloud.settings)
-        self.welcome.hide()
+        self.set_welcome_visible(False)
 
     def cloud_session_changed(self,connected):
         self.cloud_panel.set_connected(connected,self.cloud.profile_name())
@@ -611,7 +620,7 @@ class Window(QMainWindow):
         self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
         if not self.welcome.isHidden():
             self.welcome.set_busy(False)
-            if ok:self.welcome.hide()
+            if ok:self.set_welcome_visible(False)
             else:self.welcome.show_error(message)
 
     def note_cloud_change(self, *args):

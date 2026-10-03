@@ -29,6 +29,8 @@ def make_window(case, fresh_install=False, **kwargs):
     """Build a Window whose settings are isolated and whose timers stop on cleanup.
 
     fresh_install=False 时模拟老用户（选过单机），否则所有窗口都会盖着一层欢迎页。
+    调用方自己传了 cloud_settings 时也一样：除非 fresh_install=True，否则
+    cloud/standalone 会被写进那份设置里。
     """
     from camera_monitor.app import Window
     from camera_monitor.connection_options import ConnectionOptions
