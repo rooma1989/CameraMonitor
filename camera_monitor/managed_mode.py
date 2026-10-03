@@ -87,10 +87,20 @@ def ask_escape(window):
         dialog.deleteLater()
 
 
-def restart_application():
+def start_new_instance():
+    """另起一个本程序。startDetached 不等新进程跑完，立刻返回是否起来了。"""
     args = sys.argv[1:] if getattr(sys, 'frozen', False) else ['-m', 'camera_monitor.app']
-    QProcess.startDetached(sys.executable, args)
+    result = QProcess.startDetached(sys.executable, args)
+    # PySide6 6.8 返回 (是否成功, pid)，有的版本只返回 bool
+    return bool(result[0] if isinstance(result, tuple) else result)
+
+
+def restart_application():
+    """新的那份起来了才退出；起不来就留着当前这份，不然现场只剩一块黑屏。"""
+    if not start_new_instance():
+        return False
     QApplication.quit()
+    return True
 
 
 OFFLINE_TEXT = '云端连接中断，画面正常播放中 · 正在自动重连'
@@ -100,14 +110,16 @@ REPLACED_TEXT = '该设备码已在另一台电脑上登录 · 画面正常播�
 
 class ManagedController(QObject):
     def __init__(self, window, channel, uploader, autostart, parent=None,
-                 escape=ask_escape, restart=restart_application, clock=time.monotonic):
+                 escape=ask_escape, launch=start_new_instance, quit_app=None,
+                 clock=time.monotonic):
         super().__init__(parent if parent is not None else window)
         self.window = window
         self.channel = channel
         self.uploader = uploader
         self.autostart = autostart
         self.escape = escape
-        self.restart = restart
+        self.launch = launch
+        self.quit_app = quit_app if quit_app is not None else QApplication.quit
         self.clock = clock
         self.active = False
         self.scan_command = None
@@ -408,11 +420,16 @@ class ManagedController(QObject):
 
     def cmd_restart_app(self, command_id, args):
         self.ack(command_id, True)
-        # 重启后进程就没了，不会再有人回报这条命令；不在这里报完成，后台会一直显示「执行中」
+        # 先把新的那份起起来（不阻塞），成了才报完成并退出。重启后进程就没了，不会再有人
+        # 回报这条命令，所以完成要在退出前报；起不来就如实报失败，当前这份继续放画面
+        if not self.launch():
+            logger.warning('远程重启失败：新进程没有启动，继续运行当前程序')
+            self.done(command_id, False, 'RESTART_FAILED')
+            return
         self.done(command_id, True)
         self.window.authorized_quit = True
-        # 留一点时间让消息发出去；挂在自己身上，控制器先没了就不再重启
-        QTimer.singleShot(300, self, self.restart)
+        # 留一点时间让消息发出去；挂在自己身上，控制器先没了就不再退出
+        QTimer.singleShot(300, self, self.quit_app)
 
     def on_thumbnail(self, ip, image, status):
         if not self.active:

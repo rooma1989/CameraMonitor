@@ -1,6 +1,7 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,7 +12,8 @@ from PySide6.QtWidgets import QApplication
 
 from camera_monitor.cloud_state import DEFAULT_CREDENTIAL_ACCOUNT
 from camera_monitor.discovery import Device
-from camera_monitor.managed_mode import EscapeDialog, ManagedController, escape_keys
+from camera_monitor.managed_mode import (EscapeDialog, ManagedController, escape_keys,
+                                         restart_application)
 from support import make_window
 from test_credentials import MemoryVault
 
@@ -93,10 +95,13 @@ class ManagedControllerTests(unittest.TestCase):
         self.uploader = FakeUploader()
         self.autostart = FakeAutoStart()
         self.choice = None
-        self.restarts = []
+        self.launches = []
+        self.launch_ok = True
+        self.quits = []
         self.managed = ManagedController(self.window, self.channel, self.uploader, self.autostart,
                                          escape=lambda window: self.choice,
-                                         restart=lambda: self.restarts.append(1))
+                                         launch=lambda: self.launches.append(1) or self.launch_ok,
+                                         quit_app=lambda: self.quits.append(1))
 
     def command(self, name, args=None, command_id='c1'):
         self.managed.run_command({'type': 'command', 'id': command_id, 'name': name, 'args': args or {}})
@@ -361,17 +366,42 @@ class ManagedControllerTests(unittest.TestCase):
 
         self.assertEqual([1], calls)
 
+    def wait(self, ms):
+        deadline = time.monotonic() + ms / 1000
+        while time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.01)
+
     def test_restart_is_acknowledged_before_it_happens(self):
         self.managed.enter()
 
         self.command('restart_app')
 
+        self.assertEqual([1], self.launches, '新进程先起来，成了才报完成')
         self.assertTrue(self.last('ack')['ok'])
         self.assertTrue(self.last('command_done')['ok'], '重启后没人回报这条命令，必须先报完成')
         acked = self.channel.sent.index(self.last('ack'))
         self.assertLess(acked, self.channel.sent.index(self.last('command_done')))
         self.assertTrue(self.window.authorized_quit)
-        self.assertEqual([], self.restarts, '重启要等一会儿，让消息先发出去')
+        self.assertEqual([], self.quits, '退出要等一会儿，让消息先发出去')
+        self.wait(500)
+        self.assertEqual([1], self.quits)
+
+    def test_a_restart_that_cannot_start_the_new_copy_keeps_running(self):
+        # 新进程没起来还照样退出，现场就只剩一块黑屏，要等人去开机
+        self.managed.enter()
+        self.launch_ok = False
+
+        with self.assertLogs('camera_monitor.managed_mode', 'WARNING'):
+            self.command('restart_app')
+
+        self.assertTrue(self.last('ack')['ok'])
+        done = self.last('command_done')
+        self.assertFalse(done['ok'])
+        self.assertEqual('RESTART_FAILED', done['error'])
+        self.assertFalse(self.window.authorized_quit)
+        self.wait(500)
+        self.assertEqual([], self.quits)
 
     # ---------- 状态 ----------
 
@@ -513,6 +543,29 @@ class ManagedControllerTests(unittest.TestCase):
         self.managed.open_escape()
 
         self.assertFalse(self.window.authorized_quit)
+
+
+class RestartApplicationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def restart(self, started):
+        quits = []
+        with patch('camera_monitor.managed_mode.QProcess.startDetached', return_value=started), \
+                patch('camera_monitor.managed_mode.QApplication.quit', lambda: quits.append(1)):
+            return restart_application(), quits
+
+    def test_it_only_quits_once_the_new_copy_is_running(self):
+        # PySide6 6.8 返回 (是否成功, pid)，有的版本只返回 bool，两种都要认
+        for started in ((True, 4321), True):
+            with self.subTest(started=started):
+                self.assertEqual((True, [1]), self.restart(started))
+
+    def test_a_failed_start_does_not_quit(self):
+        for started in ((False, -1), False):
+            with self.subTest(started=started):
+                self.assertEqual((False, []), self.restart(started))
 
 
 class EscapeKeysTests(unittest.TestCase):
