@@ -25,15 +25,20 @@ def isolated_settings(case):
     return make
 
 
-def make_window(case, **kwargs):
-    """Build a Window whose settings are isolated and whose timers stop on cleanup."""
+def make_window(case, fresh_install=False, **kwargs):
+    """Build a Window whose settings are isolated and whose timers stop on cleanup.
+
+    fresh_install=False 时模拟老用户（选过单机），否则所有窗口都会盖着一层欢迎页。
+    """
     from camera_monitor.app import Window
     from camera_monitor.connection_options import ConnectionOptions
     from camera_monitor.device_names import DeviceNames
 
     ini = isolated_settings(case)
     kwargs.setdefault('device_names', DeviceNames(ini('names.ini')))
-    kwargs.setdefault('cloud_settings', ini('cloud.ini'))
+    cloud = kwargs.setdefault('cloud_settings', ini('cloud.ini'))
+    if not fresh_install:
+        cloud.setValue('cloud/standalone', True)
     kwargs.setdefault('connection_options', ConnectionOptions(ini('conn.ini')))
 
     window = Window(**kwargs)

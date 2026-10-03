@@ -2,7 +2,7 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import unittest
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLineEdit, QWidget
 
 from camera_monitor.welcome import WelcomePage
 
@@ -15,6 +15,7 @@ class WelcomePageTests(unittest.TestCase):
     def setUp(self):
         self.page = WelcomePage()
         self.addCleanup(self.page.deleteLater)
+        self.addCleanup(self.page.hide)
         self.codes, self.alone = [], []
         self.page.login_requested.connect(self.codes.append)
         self.page.standalone_chosen.connect(lambda: self.alone.append(1))
@@ -47,6 +48,38 @@ class WelcomePageTests(unittest.TestCase):
         self.page.alone.click()
 
         self.assertEqual([1], self.alone)
+
+    def test_the_code_box_gets_focus_when_shown(self):
+        # 模拟主窗口里的遮罩：焦点原本在别的控件上，欢迎页后来才显示出来
+        host = QWidget()
+        self.addCleanup(host.deleteLater)
+        self.addCleanup(host.hide)
+        other = QLineEdit(host)
+        page = WelcomePage(host)
+        page.hide()
+        host.show()
+        host.activateWindow()
+        other.setFocus()
+        QApplication.processEvents()
+        self.assertTrue(other.hasFocus())
+
+        page.show()
+        QApplication.processEvents()
+
+        self.assertTrue(page.code.hasFocus())
+
+    def test_focus_returns_to_the_code_after_busy(self):
+        self.page.code.setText('7k2m')
+        # offscreen 下只有激活的窗口里控件才会真的拿到焦点
+        self.page.show()
+        self.page.activateWindow()
+        QApplication.processEvents()
+        self.page.start.setFocus()
+        self.page.set_busy(True)
+        self.page.set_busy(False)
+
+        self.assertTrue(self.page.code.hasFocus())
+        self.assertEqual('7k2m', self.page.code.selectedText(), '登录失败后能直接重输')
 
     def test_an_error_can_be_shown_and_cleared(self):
         self.page.show_error('授权码不正确')

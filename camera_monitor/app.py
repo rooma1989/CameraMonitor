@@ -4,7 +4,7 @@ from .choices import ChoiceButton as QComboBox
 import platform
 import sys
 import threading
-from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent, QSettings
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -21,6 +21,8 @@ from .connection_options import ConnectionOptions
 from .cloud_panel import CloudPanel
 from .cloud_state import camera_entry, layout_entry, stream_mode
 from .cloud_sync import CloudSync
+from . import startup
+from .welcome import WelcomePage
 
 
 class SearchWorker(QThread):
@@ -46,6 +48,9 @@ class Window(QMainWindow):
         from .device_names import DeviceNames
         self.device_names = device_names if device_names is not None else DeviceNames()
         self.device_names.changed.connect(self.refresh_device_name)
+        cloud_settings=cloud_settings if cloud_settings is not None else QSettings('CameraMonitor','Cloud')
+        # 必须赶在 ScreenLock 之前判断：它一构造就往 DeviceNames 的设置里写初始密码
+        self.startup_route=startup.startup_route(cloud_settings,self.device_names.settings)
         self.closing=False
         self.worker = None
         self.target_ip = None
@@ -203,6 +208,11 @@ class Window(QMainWindow):
         self.wall.layout_changed.connect(self.note_cloud_change)
         self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
         self.refresh_networks()
+        self.welcome=WelcomePage(root)
+        self.welcome.login_requested.connect(self.welcome_login)
+        self.welcome.standalone_chosen.connect(self.use_standalone)
+        self.welcome.setVisible(self.startup_route==startup.WELCOME)
+        self.position_overlay()
         # 用窗口自己持有的定时器，而不是静态的 QTimer.singleShot：后者排进全局事件
         # 队列，窗口若在事件循环跑起来之前就被销毁，这个事件仍会触发并访问已释放的对象。
         self.cloud_start_timer=QTimer(self)
@@ -239,6 +249,9 @@ class Window(QMainWindow):
         root=self.centralWidget()
         self.settings_panel.setGeometry(max(0,root.width()-390),20,370,max(200,root.height()-40))
         self.settings_tab.setGeometry(max(0,root.width()-48),26,36,108)
+        if hasattr(self,'welcome'):
+            self.welcome.setGeometry(root.rect())
+            if not self.welcome.isHidden():self.welcome.raise_()
 
     def resizeEvent(self,event):
         super().resizeEvent(event)
@@ -582,12 +595,24 @@ class Window(QMainWindow):
     def cloud_logout(self):
         self.cloud.logout()
 
+    def welcome_login(self,code):
+        self.welcome.set_busy(True)
+        self.cloud_login(code)
+
+    def use_standalone(self):
+        startup.choose_standalone(self.cloud.settings)
+        self.welcome.hide()
+
     def cloud_session_changed(self,connected):
         self.cloud_panel.set_connected(connected,self.cloud.profile_name())
 
     def cloud_login_result(self,ok,message):
         self.cloud_panel.set_status(message,error=not ok)
         self.cloud_panel.set_connected(self.cloud.enabled(),self.cloud.profile_name())
+        if not self.welcome.isHidden():
+            self.welcome.set_busy(False)
+            if ok:self.welcome.hide()
+            else:self.welcome.show_error(message)
 
     def note_cloud_change(self, *args):
         """本机配置有改动就排一次上传；应用云端配置的过程中不回传，避免来回打架。"""

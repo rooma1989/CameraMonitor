@@ -1,7 +1,7 @@
 """第一次打开时的欢迎页：输一个设备码就行，剩下的交给后台。"""
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QVBoxLayout, QWidget)
@@ -111,6 +111,16 @@ class WelcomePage(QWidget):
         for widget in (self.start, self.code, self.alone):
             widget.setEnabled(not busy)
         self.start.setText('正在连接…' if busy else '开始使用')
+        if not busy:
+            # 登录失败回到这里时，现场可以直接重输，不用先去点输入框
+            self.code.setFocus()
+            self.code.selectAll()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # 不论从哪里把欢迎页显示出来，都让输入框拿到焦点。推迟一拍：显示过程中
+        # Qt 还可能把焦点交还给别的控件。
+        QTimer.singleShot(0, self, self.code.setFocus)
 
     def show_error(self, text):
         self.error.setText(text)
