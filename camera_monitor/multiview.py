@@ -16,6 +16,10 @@ from .wall_layout import wall_rectangles, DEFAULT_COLUMNS
 # 等过这个点就不再陪着卡住的那一格，先把已经空出来的连上。
 RECONNECT_WAIT_SECONDS = 12
 
+# 傻瓜模式下画面上的这些鼠标动作一律吞掉：现场不能放大、拖动、点开菜单
+LOCKED_EVENTS=(QEvent.Type.MouseButtonPress,QEvent.Type.MouseButtonRelease,QEvent.Type.MouseButtonDblClick,
+    QEvent.Type.MouseMove,QEvent.Type.ContextMenu,QEvent.Type.Wheel)
+
 
 class CameraTile(QFrame):
     remove_requested=Signal(object)
@@ -121,6 +125,8 @@ class CameraTile(QFrame):
         super().resizeEvent(event);self.layout_contents()
 
     def eventFilter(self,watched,event):
+        if self.monitor.locked and watched is self.player.surface and event.type() in LOCKED_EVENTS:
+            return True
         if watched is self.player.surface:
             if event.type()==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton:
                 self.drag_start=event.position().toPoint()
@@ -143,6 +149,7 @@ class CameraTile(QFrame):
         return super().eventFilter(watched,event)
 
     def dragEnterEvent(self,event):
+        if self.monitor.locked:event.ignore();return
         if event.source() in self.monitor.tiles and event.mimeData().hasFormat('application/x-camera-monitor-tile'):
             event.acceptProposedAction()
         else:event.ignore()
@@ -152,7 +159,7 @@ class CameraTile(QFrame):
         else:event.ignore()
 
     def enterEvent(self,event):
-        if not self.monitor.presentation:self.controls.show();self.controls.raise_()
+        if not self.monitor.presentation and not self.monitor.locked:self.controls.show();self.controls.raise_()
         super().enterEvent(event)
 
     def leaveEvent(self,event):
@@ -189,6 +196,7 @@ class EmptySlot(QLabel):
         self.setStyleSheet('background:#172333;color:#8293a8;border:1px solid #354255;')
 
     def dragEnterEvent(self,event):
+        if self.monitor.locked:event.ignore();return
         if event.source() in self.monitor.tiles and event.mimeData().hasFormat('application/x-camera-monitor-tile'):
             event.acceptProposedAction()
         else:event.ignore()
@@ -226,6 +234,7 @@ class MultiView(QDialog):
         self.credential_store=credential_store or CredentialStore()
         self.capacity=self.saved_capacity()
         self.presentation=False
+        self.locked=False
         self.layout_mode=self.capacity
         self.focused_tile=None
         self.layout_timer=QTimer(self)
@@ -473,6 +482,14 @@ class MultiView(QDialog):
         self.layout().setContentsMargins(*((0,0,0,0) if enabled else (9,9,9,9)))
         self.layout().setSpacing(0 if enabled else 6)
         self.relayout();self.schedule_layout()
+
+    def set_locked(self,locked):
+        """傻瓜模式：现场只能看，任何点击、拖动都不起作用。"""
+        self.locked=bool(locked)
+        if self.locked:
+            self.focused_tile=None
+            for tile in self.tiles:tile.controls.hide()
+        self.relayout()
 
     def persist_slots(self):
         self.saved_slots=[t.player.device.ip if t else '' for t in self.slots]
