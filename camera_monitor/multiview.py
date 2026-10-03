@@ -144,7 +144,7 @@ class CameraTile(QFrame):
                     self.drag_start=None
                     drag=QDrag(self);mime=QMimeData();mime.setData('application/x-camera-monitor-tile',b'move')
                     drag.setMimeData(mime);drag.exec(Qt.DropAction.MoveAction);return True
-        if event.type()==QEvent.Type.FocusIn and not self.monitor.presentation:
+        if event.type()==QEvent.Type.FocusIn and not self.monitor.presentation and not self.monitor.locked:
             self.controls.show();self.controls.raise_()
         return super().eventFilter(watched,event)
 
@@ -155,6 +155,7 @@ class CameraTile(QFrame):
         else:event.ignore()
 
     def dropEvent(self,event):
+        if self.monitor.locked:event.ignore();return
         if self.monitor.swap_tiles(event.source(),self):event.acceptProposedAction()
         else:event.ignore()
 
@@ -202,6 +203,7 @@ class EmptySlot(QLabel):
         else:event.ignore()
 
     def dropEvent(self,event):
+        if self.monitor.locked:event.ignore();return
         if self.monitor.move_tile(event.source(),self.slot_index):event.acceptProposedAction()
         else:event.ignore()
 
