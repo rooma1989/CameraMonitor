@@ -4,7 +4,7 @@ import tempfile
 import time
 import unittest
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QEvent, QSettings
 from PySide6.QtWidgets import QApplication
 
 from camera_monitor.cloud import CloudAuthError, CloudConflict, CloudError
@@ -273,6 +273,107 @@ class CloudSyncTest(unittest.TestCase):
         self.assertTrue(fresh.enabled(), '安全存储可能只是暂时不可用，不该清掉设置')
         self.assertEqual('', fresh.token)
         self.assertTrue(applied, '离线优先：读不到会话也要先把本机缓存铺上，画面不能空着')
+
+    # ---------- 安全存储暂时不可用后自动恢复 ----------
+
+    def dispose(self, sync):
+        """确定地拆掉测试里另建的 CloudSync。
+
+        它发过请求的话，_retire 会对请求线程 deleteLater；测试不跑事件循环，这些延迟删除
+        一直挂着。等 Python 这边随手释放了 sync，挂着的事件会在后面某个用例 processEvents
+        时才处理，那时对象早已不在——表现是在无关用例里段错误。所以在这里收尾：
+        先把在路上的结果跑完，停掉，再当场删掉并把延迟删除跑空。
+        """
+        self.pump(lambda: not sync.busy() and not sync.calls)
+        sync.stop()
+        sync.deleteLater()
+        QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        QApplication.processEvents()
+
+    def flaky_sync(self, failures, retry_ms=10, retry_max_ms=40):
+        """前 failures 次读会话都失败，之后读得到。托管现场无人值守，必须自己缓过来。"""
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+        real = self.session_store
+        attempts = []
+
+        class Flaky:
+            def load_session(self):
+                attempts.append(1)
+                if len(attempts) <= failures:
+                    raise CredentialError('无法读取云端登录信息，请重新输入授权码。')
+                return real.load_session()
+
+            def clear_session(self):
+                real.clear_session()
+
+            def save_session(self, auth_code, token):
+                real.save_session(auth_code, token)
+
+        fresh = CloudSync(self.names, self.options, self.store, collector=lambda: self.collected,
+                          client=self.client, settings=self.settings, session_store=Flaky(),
+                          storage_retry_ms=retry_ms, storage_retry_max_ms=retry_max_ms)
+        self.addCleanup(self.dispose, fresh)
+        self.client.calls.clear()
+        return fresh, attempts
+
+    def test_an_unreadable_vault_is_retried_until_the_session_comes_back(self):
+        fresh, attempts = self.flaky_sync(failures=2)
+        states = []
+        fresh.session_changed.connect(states.append)
+
+        fresh.start()
+        self.assertEqual('', fresh.token)
+        self.assertTrue(self.pump(lambda: fresh.token == 'cm1.token'))
+        self.assertTrue(self.pump(lambda: any(c[0] == 'fetch' for c in self.client.calls)))
+
+        self.assertEqual(3, len(attempts))
+        self.assertEqual([True], states, '恢复后和正常登录一样宣布已连接，界面据此接通下行通道')
+        self.assertTrue(fresh.poll_timer.isActive())
+        self.assertFalse(fresh.storage_retry_timer.isActive())
+
+    def test_retries_back_off_up_to_a_ceiling(self):
+        fresh, _ = self.flaky_sync(failures=99, retry_ms=1000, retry_max_ms=5000)
+
+        fresh.start()
+        delays = [fresh.storage_retry_timer.interval()]
+        for _ in range(4):
+            fresh._retry_storage()
+            delays.append(fresh.storage_retry_timer.interval())
+
+        self.assertEqual([1000, 2000, 4000, 5000, 5000], delays)
+        self.assertTrue(fresh.storage_retry_timer.isActive())
+
+    def test_the_default_retry_starts_at_half_a_minute_and_caps_at_five(self):
+        fresh, _ = self.flaky_sync(failures=99, retry_ms=None, retry_max_ms=None)
+        self.assertEqual(30_000, fresh.storage_retry_ms)
+        self.assertEqual(300_000, fresh.storage_retry_max_ms)
+
+    def test_logging_out_stopping_or_logging_in_ends_the_retries(self):
+        for action in ('logout', 'stop', 'login'):
+            with self.subTest(action=action):
+                fresh, _ = self.flaky_sync(failures=99, retry_ms=60_000)
+                fresh.start()
+                self.assertTrue(fresh.storage_retry_timer.isActive())
+
+                if action == 'login':
+                    fresh.login('new-code')
+                else:
+                    getattr(fresh, action)()
+
+                self.assertFalse(fresh.storage_retry_timer.isActive())
+                self.assertTrue(self.pump(lambda: not fresh.busy() and not fresh.calls))
+
+    def test_a_retry_that_fires_after_logout_does_nothing(self):
+        fresh, attempts = self.flaky_sync(failures=1, retry_ms=60_000)
+        fresh.start()
+        fresh.logout()
+        before = len(attempts)
+
+        fresh._retry_storage()
+
+        self.assertEqual(before, len(attempts))
+        self.assertEqual('', fresh.token)
 
     def test_a_network_failure_keeps_the_session(self):
         self.sync.login('code12345')

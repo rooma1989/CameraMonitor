@@ -178,6 +178,54 @@ class ManagedWindowTests(unittest.TestCase):
         self.assertEqual('managed', self.window.cloud.mode())
         self.assertEqual([], self.channel_starts)
 
+    def test_a_managed_computer_recovers_once_the_vault_is_readable_again(self):
+        # 无人值守的托管现场：钥匙串缓过来以后要自己接上云端，不能等人去重启
+        from camera_monitor.credentials import CredentialError
+        settings = self.window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        self.window.cloud._remember(managed())
+        settings.setValue('cloud/mode', 'managed')
+        self.window.cloud.session.save_session('ABCD-1234', 'cm1.t')
+        real = self.window.cloud.session.load_session
+        broken = [True]
+
+        def load():
+            if broken[0]:
+                raise CredentialError('无法读取云端登录信息，请重新输入授权码。')
+            return real()
+        self.window.cloud.session.load_session = load
+        refreshes = []
+        self.window.cloud.refresh = lambda: refreshes.append(1)
+
+        self.window.start_cloud()
+        QApplication.processEvents()
+        self.assertTrue(self.window.cloud.storage_retry_timer.isActive())
+        self.assertEqual([], self.channel_starts)
+
+        broken[0] = False
+        self.window.cloud._retry_storage()
+        QApplication.processEvents()
+
+        self.assertEqual('cm1.t', self.window.cloud.token)
+        self.assertEqual([1], refreshes)
+        self.assertEqual([1], self.channel_starts)
+        self.assertTrue(self.window.cloud_panel.connected)
+        self.assertTrue(self.window.managed.active)
+        self.assertTrue(self.window.welcome.isHidden())
+
+    def test_unbinding_stops_the_vault_retries(self):
+        settings = self.window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        self.window.cloud._remember(managed())
+        settings.setValue('cloud/mode', 'managed')
+        self.broken_vault()
+        self.window.start_cloud()
+        QApplication.processEvents()
+
+        self.window.unbind_cloud()
+
+        self.assertFalse(self.window.cloud.storage_retry_timer.isActive())
+
     def test_a_full_mode_computer_whose_vault_is_unreadable_shows_disconnected(self):
         settings = self.window.cloud.settings
         settings.setValue('cloud/enabled', True)

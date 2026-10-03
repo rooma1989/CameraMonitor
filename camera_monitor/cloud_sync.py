@@ -20,6 +20,10 @@ POLL_INTERVAL_MS = 60_000
 # 后台明确不让这个设备码再用了：重试没有意义，只能等人换码或后台恢复
 PERMANENT_FAILURES = ('PROFILE_DISABLED', 'INVALID_AUTH_CODE', 'PROFILE_IN_USE')
 PUSH_DEBOUNCE_MS = 2_000
+# 启动时钥匙串读不出会话：先等半分钟再试，之后每次翻倍，最多五分钟一次。
+# 托管现场没人值守，缓过来要自己接上云端，不能等人去重启
+STORAGE_RETRY_MS = 30_000
+STORAGE_RETRY_MAX_MS = 300_000
 
 
 class CloudCall(QThread):
@@ -59,7 +63,8 @@ class CloudSync(QObject):
     storage_unavailable = Signal(str)
 
     def __init__(self, names, options, store, collector, parent=None,
-                 client=None, settings=None, session_store=None):
+                 client=None, settings=None, session_store=None,
+                 storage_retry_ms=None, storage_retry_max_ms=None):
         super().__init__(parent)
         self.names = names
         self.options = options
@@ -94,6 +99,13 @@ class CloudSync(QObject):
         self.push_timer.setSingleShot(True)
         self.push_timer.setInterval(PUSH_DEBOUNCE_MS)
         self.push_timer.timeout.connect(self.push_now)
+
+        self.storage_retry_ms = storage_retry_ms or STORAGE_RETRY_MS
+        self.storage_retry_max_ms = storage_retry_max_ms or STORAGE_RETRY_MAX_MS
+        self.storage_retry_timer = QTimer(self)
+        self.storage_retry_timer.setSingleShot(True)
+        self.storage_retry_timer.setInterval(self.storage_retry_ms)
+        self.storage_retry_timer.timeout.connect(self._retry_storage)
 
     # ---------- 本机状态 ----------
 
@@ -160,18 +172,35 @@ class CloudSync(QObject):
         """离线优先：先把本机缓存铺上去，再去云端看有没有更新。"""
         if not self.enabled():
             return
+        self.storage_retry_timer.setInterval(self.storage_retry_ms)
+        self._resume_session(initial=True)
 
+    def _retry_storage(self):
+        """钥匙串缓过来没有。已经退出、关闭，或者人手登录拿到了令牌，就不再试。"""
+        if self.closing or self.token or not self.enabled():
+            return
+        self._resume_session(initial=False)
+
+    def _resume_session(self, initial):
         try:
             session = self.session.load_session()
         except CredentialError as exc:
-            # 安全存储可能只是暂时不可用：设置、模式、缓存都不动，照样先把缓存铺上，
-            # 画面不能空着。没有令牌就不联网，界面据 storage_unavailable 显示未连接
-            cached = self.cached_snapshot()
-            if cached:
-                self._apply(cached, announce=False)
-            self.storage_unavailable.emit(str(exc))
-            self.status.emit(str(exc))
+            if initial:
+                # 安全存储可能只是暂时不可用：设置、模式、缓存都不动，照样先把缓存铺上，
+                # 画面不能空着。没有令牌就不联网，界面据 storage_unavailable 显示未连接
+                cached = self.cached_snapshot()
+                if cached:
+                    self._apply(cached, announce=False)
+                self.storage_unavailable.emit(str(exc))
+                self.status.emit(str(exc))
+                self.storage_retry_timer.start()
+            else:
+                # 还是读不出来：缓存早已铺好，不再重复提示，拉长间隔接着等
+                self.storage_retry_timer.setInterval(
+                    min(self.storage_retry_timer.interval() * 2, self.storage_retry_max_ms))
+                self.storage_retry_timer.start()
             return
+        self.storage_retry_timer.stop()
 
         if not session or not session.get('token'):
             # 设置说已启用、钥匙串里却没有会话（条目被删，或配置迁移到了新机器）。
@@ -184,10 +213,16 @@ class CloudSync(QObject):
 
         self.token = session['token']
 
-        cached = self.cached_snapshot()
-        if cached:
-            self._apply(cached, announce=False)
-            self.status.emit(f'{self.profile_name()} · 使用本机缓存，正在联系云端…')
+        if initial:
+            cached = self.cached_snapshot()
+            if cached:
+                self._apply(cached, announce=False)
+                self.status.emit(f'{self.profile_name()} · 使用本机缓存，正在联系云端…')
+        else:
+            # 缓存在第一次读失败时已经铺好了。这里要明说「连上了」：界面据此把按钮
+            # 改回已连接、接通下行通道——正常启动时这一步由 start_cloud 自己做
+            self.status.emit(f'{self.profile_name()} · 已重新读到登录信息，正在联系云端…')
+            self.session_changed.emit(True)
 
         self.poll_timer.start()
         self.refresh()
@@ -197,6 +232,7 @@ class CloudSync(QObject):
         self.closing = True
         self.poll_timer.stop()
         self.push_timer.stop()
+        self.storage_retry_timer.stop()
         for call in list(self.calls):
             if call.isRunning():
                 # 网络调用本身已有超时上界，这里留足它跑完的时间
@@ -214,6 +250,8 @@ class CloudSync(QObject):
             self.login_result.emit(False, '请输入授权码。')
             return
         uid = self.client_uid()
+        # 人亲手登录了，就以这次为准，不再去等钥匙串里那份旧会话
+        self.storage_retry_timer.stop()
         self.status.emit('正在登录云端…')
         self._dispatch('login', lambda: self.client.login(code, uid, device_name, app_version),
                        context=code)
@@ -224,6 +262,7 @@ class CloudSync(QObject):
         self._relogin_pending = ''
         self.poll_timer.stop()
         self.push_timer.stop()
+        self.storage_retry_timer.stop()
         self.token = ''
         self.last_pushed = ''
         try:
