@@ -23,10 +23,19 @@ from .player_state import PLAYING, player_state
 
 logger = logging.getLogger(__name__)
 
-ESCAPE_KEYS = 'Ctrl+Shift+Alt+Q'
 STATUS_TICK_MS = 1_000
 STATUS_HEARTBEAT_SECONDS = 60
 OFFLINE_NOTICE_MS = 10_000
+STATUS_ERROR_LOG_SECONDS = 60
+
+
+def escape_keys(platform=sys.platform):
+    """维护入口的组合键。
+
+    Qt 在 macOS 上把 Ctrl 映射成 ⌘，而 ⌘⇧⌥Q 是系统的「立即注销」，按下去现场直接退出登录；
+    macOS 上的 Meta 才是物理 Control 键，所以那边用 Meta，按的还是同一排键。
+    """
+    return 'Meta+Shift+Alt+Q' if platform == 'darwin' else 'Ctrl+Shift+Alt+Q'
 
 
 class EscapeDialog(QDialog):
@@ -104,6 +113,10 @@ class ManagedController(QObject):
         self.last_status = None
         self.last_status_at = 0.0
         self.cached_code_tail = None
+        # 回报状态每秒一拍，出错时同一种错一分钟只记一次，别把日志刷爆
+        self.status_errors = {}
+        # 当前这条命令的 ack 发过没有；处理函数半路出错时据此决定要不要补一个失败的 ack
+        self.acked_command = None
 
         root = window.centralWidget()
         self.waiting = QLabel(root)
@@ -123,7 +136,7 @@ class ManagedController(QObject):
         self.status_timer.setInterval(STATUS_TICK_MS)
         self.status_timer.timeout.connect(self.report_status)
 
-        self.shortcut = QShortcut(QKeySequence(ESCAPE_KEYS), window)
+        self.shortcut = QShortcut(QKeySequence(escape_keys()), window)
         self.shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut.activated.connect(self.open_escape)
         self.shortcut.setEnabled(False)
@@ -157,6 +170,11 @@ class ManagedController(QObject):
         self.active = False
         self.status_timer.stop()
         self.offline_timer.stop()
+        # 离开托管后还在路上的截图、搜索结果都不该再往云端送
+        self.snapshot_wanted.clear()
+        self.scan_dropped.clear()
+        self.seen_playing.clear()
+        self.scan_command = None
         self.shortcut.setEnabled(False)
         self.waiting.hide()
         self.offline.hide()
@@ -248,6 +266,7 @@ class ManagedController(QObject):
         if handler is None:
             self.ack(command_id, False, 'UNKNOWN_COMMAND')
             return
+        self.acked_command = None
         try:
             handler(command_id, args)
         except Exception:
@@ -256,9 +275,13 @@ class ManagedController(QObject):
             logger.exception('执行云端动作 %s 失败', name)
             if self.scan_command == command_id:
                 self.scan_command = None
+            if self.acked_command != command_id:
+                # 还没来得及确认就出错了，后台那边连「已收到」都没看到，补一个失败的确认
+                self.ack(command_id, False, 'FAILED')
             self.done(command_id, False, 'FAILED')
 
     def ack(self, command_id, ok, error=''):
+        self.acked_command = command_id
         message = {'type': 'ack', 'id': command_id, 'ok': ok}
         if error:
             message['error'] = error
@@ -292,13 +315,27 @@ class ManagedController(QObject):
 
     def on_scan_completed(self, cancelled):
         command_id, self.scan_command = self.scan_command, None
-        if command_id is None:
+        dropped, self.scan_dropped = self.scan_dropped, set()
+        if command_id is None or not self.active:
             return
-        devices = list(self.window.devices.values())
-        self.channel.send({'type': 'scan_result', 'id': command_id, 'devices': [
-            {'ip': d.ip, 'model': d.model or '', 'manufacturer': d.manufacturer or '',
-             'protocols': list(d.protocols or []), 'onvif_urls': list(d.urls or [])}
-            for d in devices]})
+        # 先把搜索结果报上去：后面补截图哪里出了错，也不能让后台一直显示「搜索中」
+        try:
+            devices = list(self.window.devices.values())
+            result = {'type': 'scan_result', 'id': command_id, 'devices': [
+                {'ip': d.ip, 'model': d.model or '', 'manufacturer': d.manufacturer or '',
+                 'protocols': list(d.protocols or []), 'onvif_urls': list(d.urls or [])}
+                for d in devices]}
+        except Exception:
+            logger.exception('整理搜索结果失败')
+            self.done(command_id, False, 'FAILED')
+            return
+        self.channel.send(result)
+        try:
+            self.request_scan_snapshots(devices, dropped)
+        except Exception:
+            logger.exception('搜索后补截图失败')
+
+    def request_scan_snapshots(self, devices, dropped):
         on_wall = {tile.player.device.ip for tile in self.window.wall.tiles}
         requested = set()
         for device in devices:
@@ -307,7 +344,6 @@ class ManagedController(QObject):
                 requested.add(device.ip)
         # 搜索开始时被 thumbnails.cancel_all() 丢掉的抓图：还认得的重新排上，
         # 这次没搜到的就别让它一直挂在等待名单里
-        dropped, self.scan_dropped = self.scan_dropped, set()
         known = self.known_devices()
         for ip in dropped - requested:
             if ip not in self.snapshot_wanted:
@@ -364,10 +400,15 @@ class ManagedController(QObject):
         QTimer.singleShot(300, self, self.restart)
 
     def on_thumbnail(self, ip, image, status):
-        if ip not in self.snapshot_wanted or image is None or image.isNull():
+        if not self.active:
             return
-        self.snapshot_wanted.discard(ip)
-        self.uploader.submit('camera', image, ip)
+        try:
+            if ip not in self.snapshot_wanted or image is None or image.isNull():
+                return
+            self.snapshot_wanted.discard(ip)
+            self.uploader.submit('camera', image, ip)
+        except Exception:
+            logger.exception('上传摄像头截图失败')
 
     # ---------- 状态 ----------
 
@@ -387,9 +428,21 @@ class ManagedController(QObject):
     def report_status(self):
         if not self.active:
             return
+        try:
+            self.send_status()
+        except Exception as error:
+            # 定时器槽里的异常 PySide 只会悄悄吞掉；每秒都会再来，同一种错一分钟只记一次
+            now = self.clock()
+            last = self.status_errors.get(type(error))
+            if last is None or now - last >= STATUS_ERROR_LOG_SECONDS:
+                self.status_errors[type(error)] = now
+                logger.exception('回报运行状态失败')
+
+    def send_status(self):
         payload = self.status_payload()
         for camera in payload['cameras']:
-            if camera['state'] == PLAYING and camera['ip'] not in self.seen_playing:
+            # 真画出第一帧才算播起来：只是状态写着「正在播放」时就抓图，会对摄像头再开一路流
+            if 'width' in camera and camera['ip'] not in self.seen_playing:
                 self.seen_playing.add(camera['ip'])
                 tile = next(t for t in self.window.wall.tiles if t.player.device.ip == camera['ip'])
                 self.want_snapshot(tile.player.device)

@@ -19,8 +19,17 @@ class FakeWorker(QObject):
     def __init__(self, device, token, store, options, credentials, parent):
         super().__init__(parent)
         self.device, self.token = device, token
+        self.credentials = credentials
         self.cancel = threading.Event()
     def start(self): pass
+
+
+def recording_factory(created):
+    def make(*args):
+        worker = FakeWorker(*args)
+        created.append(worker)
+        return worker
+    return make
 
 
 class ThumbnailTests(unittest.TestCase):
@@ -103,6 +112,68 @@ class ThumbnailTests(unittest.TestCase):
             worker.finished.emit()
         self.assertEqual(len(results), before)
         self.assertFalse(controller.busy())
+
+    def test_a_queued_request_takes_credentials_supplied_later(self):
+        created = []
+        controller = ThumbnailController(store=Mock(), worker_factory=recording_factory(created))
+        controller.request(Device('10.0.0.1'))
+        controller.request(Device('10.0.0.2'))
+        controller.request(Device('10.0.0.3'))
+        self.assertIn('10.0.0.3', controller.pending)
+
+        controller.request(Device('10.0.0.3'), ('admin', 'dflt'))
+        controller.request(Device('10.0.0.3'))  # 后来的「没带账号」不能把已经给的账号冲掉
+        created[0].finished.emit()
+
+        self.assertEqual(3, len(created), '同一台不应该排两次')
+        self.assertEqual(('10.0.0.3', ('admin', 'dflt')), (created[2].device.ip, created[2].credentials))
+        controller.cancel_all()
+
+    def test_a_running_request_without_image_retries_once_with_later_credentials(self):
+        created = []
+        controller = ThumbnailController(store=Mock(), worker_factory=recording_factory(created))
+        results = []
+        controller.updated.connect(lambda *args: results.append(args))
+        device = Device('10.0.0.1')
+        controller.request(device)
+        first = created[0]
+
+        controller.request(device, ('admin', 'dflt'))
+        self.assertEqual(1, len(created), '正在抓的那次不打断')
+        first.result.emit('10.0.0.1', first.token, None, '认证失败，请检查账号密码')
+        first.finished.emit()
+
+        self.assertEqual(2, len(created))
+        self.assertEqual(('admin', 'dflt'), created[1].credentials)
+        self.assertNotIn('认证失败，请检查账号密码', [status for _, _, status in results],
+                         '马上要换账号重试，前一次的失败不必显示出来')
+
+        # 重试用的就是这组账号，再要一次同样的不算新账号，失败了也不再重试
+        controller.request(device, ('admin', 'dflt'))
+        second = created[1]
+        second.result.emit('10.0.0.1', second.token, None, '认证失败，请检查账号密码')
+        second.finished.emit()
+        self.assertEqual(2, len(created))
+        self.assertEqual('认证失败，请检查账号密码', results[-1][2])
+        self.assertFalse(controller.busy())
+
+    def test_a_running_request_that_got_an_image_is_not_retried(self):
+        created = []
+        controller = ThumbnailController(store=Mock(), worker_factory=recording_factory(created))
+        results = []
+        controller.updated.connect(lambda *args: results.append(args))
+        device = Device('10.0.0.1')
+        controller.request(device)
+        first = created[0]
+
+        controller.request(device, ('admin', 'dflt'))
+        image = QImage(64, 48, QImage.Format.Format_RGB888)
+        first.result.emit('10.0.0.1', first.token, image, '抓拍画面 · 点击放大')
+        first.finished.emit()
+
+        self.assertEqual(1, len(created))
+        self.assertIs(image, results[-1][1])
+        self.assertEqual({}, controller.retry_credentials)
 
     def test_auth_errors_are_sanitized_and_manual_host_is_validated(self):
         for url in ('rtsp://192.168.1.2/live', 'rtsp://other-host/live'):

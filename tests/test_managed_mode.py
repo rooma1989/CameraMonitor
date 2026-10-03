@@ -1,5 +1,6 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from camera_monitor.cloud_state import DEFAULT_CREDENTIAL_ACCOUNT
 from camera_monitor.discovery import Device
-from camera_monitor.managed_mode import EscapeDialog, ManagedController
+from camera_monitor.managed_mode import EscapeDialog, ManagedController, escape_keys
 from support import make_window
 from test_credentials import MemoryVault
 
@@ -53,6 +54,19 @@ class FakeAutoStart:
     def disable(self):
         self.enabled = False
         return True
+
+
+class FakeThumbnailWorker(QObject):
+    result = Signal(str, int, object, str)
+    finished = Signal()
+
+    def __init__(self, device, token, store, options, credentials, parent):
+        super().__init__(parent)
+        self.device, self.token, self.credentials = device, token, credentials
+        self.cancel = threading.Event()
+
+    def start(self):
+        pass
 
 
 def frame():
@@ -112,6 +126,24 @@ class ManagedControllerTests(unittest.TestCase):
         self.assertFalse(self.window.presentation)
         self.assertIsNone(self.window.managed_fullscreen)
         self.assertFalse(self.autostart.enabled)
+
+    def test_nothing_is_uploaded_or_reported_after_leaving(self):
+        self.managed.enter()
+        self.window.devices = {'10.0.0.7': Device('10.0.0.7')}
+        self.command('refresh_snapshots', {'ips': ['10.0.0.7']})
+        self.window.run_scan = lambda target_ip=None: True
+        self.command('scan', command_id='s')
+        sent = len(self.channel.sent)
+
+        self.managed.leave()
+        self.managed.on_thumbnail('10.0.0.7', frame(), '抓拍画面')
+        self.window.scan_completed.emit(False)
+
+        self.assertEqual([], self.uploader.submitted, '离开托管后不能再往云端传截图')
+        self.assertEqual(sent, len(self.channel.sent))
+        self.assertEqual((set(), set(), set(), None),
+                         (self.managed.snapshot_wanted, self.managed.scan_dropped,
+                          self.managed.seen_playing, self.managed.scan_command))
 
     def test_an_empty_wall_shows_the_waiting_notice(self):
         self.managed.enter()
@@ -212,6 +244,78 @@ class ManagedControllerTests(unittest.TestCase):
         self.command('scan', command_id='y')
         self.assertTrue(self.last('ack')['ok'], '失败的那次不能把搜索一直占着')
 
+    def test_a_handler_failing_before_its_ack_still_acks(self):
+        self.managed.enter()
+
+        def broken(command_id, args):
+            raise RuntimeError('boom')
+        self.managed.cmd_reconnect_all = broken
+        with self.assertLogs('camera_monitor.managed_mode', 'ERROR'):
+            self.command('reconnect_all', command_id='z')
+
+        self.assertEqual([{'type': 'ack', 'id': 'z', 'ok': False, 'error': 'FAILED'}],
+                         self.channel.of('ack'))
+        self.assertEqual('FAILED', self.last('command_done')['error'])
+
+    def test_a_handler_failing_after_its_ack_does_not_ack_twice(self):
+        self.managed.enter()
+
+        def broken():
+            raise RuntimeError('boom')
+        self.window.wall.reconnect_all = broken
+        with self.assertLogs('camera_monitor.managed_mode', 'ERROR'):
+            self.command('reconnect_all', command_id='z')
+
+        self.assertEqual([{'type': 'ack', 'id': 'z', 'ok': True}], self.channel.of('ack'))
+        self.assertEqual('FAILED', self.last('command_done')['error'])
+
+    def test_remotely_scanned_cameras_get_the_default_login_with_the_real_queue(self):
+        # 用真的 ThumbnailController：finish_scan 自己会先给每台排一次（不带账号），
+        # 托管这边再带着默认账号要一次，不能因为「已经在抓了」就被吞掉
+        del self.window.thumbnails.request
+        created = []
+
+        def factory(*args):
+            worker = FakeThumbnailWorker(*args)
+            created.append(worker)
+            return worker
+        self.window.thumbnails.worker_factory = factory
+        self.managed.enter()
+        self.window.wall.credential_store.save(DEFAULT_CREDENTIAL_ACCOUNT, 'admin', 'dflt')
+        self.window.run_scan = lambda target_ip=None: True
+        self.command('scan', command_id='s')
+        self.window.devices = {ip: Device(ip) for ip in ('10.0.0.1', '10.0.0.2', '10.0.0.3')}
+
+        self.window.finish_scan()
+
+        self.assertEqual(['10.0.0.1', '10.0.0.2'], [w.device.ip for w in created])
+        for worker in list(created):
+            worker.result.emit(worker.device.ip, worker.token, None, '认证失败，请检查账号密码')
+            worker.finished.emit()
+        # 让排在最后的那台也跑起来
+        next(w for w in created if w.device.ip == '10.0.0.3').finished.emit()
+        started = {(w.device.ip, w.credentials) for w in created}
+        for ip in ('10.0.0.1', '10.0.0.2', '10.0.0.3'):
+            self.assertIn((ip, ('admin', 'dflt')), started)
+
+        retried = next(w for w in created if w.device.ip == '10.0.0.1' and w.credentials)
+        retried.result.emit('10.0.0.1', retried.token, frame(), '抓拍画面 · 点击放大')
+        self.assertEqual([('camera', '10.0.0.1')], self.uploader.submitted)
+
+    def test_a_scan_result_that_cannot_be_built_still_closes_the_command(self):
+        self.managed.enter()
+        self.window.run_scan = lambda target_ip=None: True
+        self.command('scan', command_id='s')
+        self.window.devices = {'10.0.0.7': Device('10.0.0.7', protocols=5)}
+
+        with self.assertLogs('camera_monitor.managed_mode', 'ERROR'):
+            self.window.scan_completed.emit(False)
+
+        self.assertEqual({'type': 'command_done', 'id': 's', 'ok': False, 'error': 'FAILED'},
+                         self.last('command_done'))
+        self.command('scan', command_id='t')
+        self.assertTrue(self.last('ack')['ok'])
+
     def test_a_bad_target_is_refused(self):
         self.managed.enter()
 
@@ -284,11 +388,44 @@ class ManagedControllerTests(unittest.TestCase):
         self.assertEqual(1, len(statuses))
         self.assertEqual([{'ip': '10.0.0.1', 'state': 'playing'}], statuses[0]['cameras'])
         self.assertIn('config_version', statuses[0])
-        self.assertIn('10.0.0.1', self.managed.snapshot_wanted, '第一次播起来自动补一张截图')
 
         tile.player.status.setText('视频认证失败，请检查摄像头用户名和密码。')
         self.managed.report_status()
         self.assertEqual('auth_failed', self.channel.of('status')[-1]['cameras'][0]['state'])
+
+    def test_the_first_frame_triggers_one_snapshot(self):
+        self.managed.enter()
+        self.window.wall.add_device(Device('10.0.0.1'))
+        tile = self.window.wall.tiles[0]
+        tile.player.status.setText('正在播放 · 1280 × 720 · H264')
+
+        self.managed.report_status()
+        self.assertEqual([], self.requests, '还没画出第一帧，抓图会再开一路流')
+
+        tile.player.surface._image = frame()
+        self.managed.report_status()
+        self.managed.report_status()
+        self.assertEqual(['10.0.0.1'], [ip for ip, _ in self.requests], '第一次播起来自动补一张截图')
+        self.assertIn('10.0.0.1', self.managed.snapshot_wanted)
+
+    def test_a_failing_status_tick_is_logged_and_the_next_tick_still_reports(self):
+        self.managed.enter()
+        real = self.managed.status_payload
+        failures = [RuntimeError('boom'), RuntimeError('boom again')]
+
+        def flaky():
+            if failures:
+                raise failures.pop(0)
+            return real()
+        self.managed.status_payload = flaky
+
+        with self.assertLogs('camera_monitor.managed_mode', 'ERROR') as logs:
+            self.managed.report_status()
+            self.managed.report_status()
+        self.assertEqual(1, len(logs.records), '每秒一拍，同一种错一分钟内只记一次')
+
+        self.managed.report_status()
+        self.assertEqual(1, len(self.channel.of('status')))
 
     def test_status_waits_while_offline(self):
         self.managed.enter()
@@ -345,6 +482,16 @@ class ManagedControllerTests(unittest.TestCase):
         self.managed.open_escape()
 
         self.assertFalse(self.window.authorized_quit)
+
+
+class EscapeKeysTests(unittest.TestCase):
+    def test_macos_avoids_the_system_log_out_shortcut(self):
+        # Qt 在 macOS 上把 Ctrl 映射成 ⌘，⌘⇧⌥Q 是系统「立即注销」；Meta 才是物理 Control 键
+        self.assertEqual('Meta+Shift+Alt+Q', escape_keys('darwin'))
+
+    def test_other_platforms_use_control(self):
+        self.assertEqual('Ctrl+Shift+Alt+Q', escape_keys('win32'))
+        self.assertEqual('Ctrl+Shift+Alt+Q', escape_keys('linux'))
 
 
 class EscapeDialogTests(unittest.TestCase):

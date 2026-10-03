@@ -94,6 +94,10 @@ class ThumbnailController(QObject):
         self.active = set()
         self.tokens = {}
         self.sequence = 0
+        # 每个线程开工时用的账号，用来判断后来要的账号是不是新的
+        self.started_with = {}
+        # 线程已经在跑时又有人带着另一组账号来要：这次没抓到就用它再试一次
+        self.retry_credentials = {}
 
     def request(self, device, credentials=None):
         image = self.live_image(device.ip)
@@ -101,12 +105,27 @@ class ThumbnailController(QObject):
             self.sequence += 1
             self.tokens[device.ip] = self.sequence
             self.pending.pop(device.ip, None)
+            self.retry_credentials.pop(device.ip, None)
             for worker in self.active:
                 if worker.device.ip == device.ip: worker.cancel.set()
             self.updated.emit(device.ip, image.copy(), '播放画面 · 点击放大')
             return
-        if device.ip in self.pending or any(w.device.ip == device.ip and not w.cancel.is_set() for w in self.active):
+        # 同一台已经在排队或在抓时不重复排，但后来的请求可能带着先前没有的账号
+        # （比如搜索结束时先不带账号排上，云端托管再带着默认账号要一次），不能直接吞掉
+        if device.ip in self.pending:
+            if credentials is not None:
+                queued, token, options, _ = self.pending[device.ip]
+                self.pending[device.ip] = (queued, token, options, credentials)
             return
+        running = next((w for w in self.active if w.device.ip == device.ip and not w.cancel.is_set()), None)
+        if running is not None:
+            # 正在抓的不打断：多半是免密就能抓到；抓不到再拿新账号补一次
+            if credentials is not None and credentials != self.started_with.get(running):
+                self.retry_credentials[device.ip] = (device, credentials)
+            return
+        self._enqueue(device, credentials)
+
+    def _enqueue(self, device, credentials):
         if len(self.pending) >= 128:
             self.updated.emit(device.ip, None, '等待手动预览')
             return
@@ -124,6 +143,7 @@ class ThumbnailController(QObject):
             _, (device, token, options, credentials) = self.pending.popitem(last=False)
             worker = self.worker_factory(device, token, self.store, options, credentials, self)
             self.active.add(worker)
+            self.started_with[worker] = credentials
             worker.result.connect(self._accept)
             worker.finished.connect(self._finished)
             self.updated.emit(device.ip, None, '正在获取画面…')
@@ -131,22 +151,33 @@ class ThumbnailController(QObject):
 
     @Slot(str, int, object, str)
     def _accept(self, ip, token, image, status):
-        if self.tokens.get(ip) == token:
-            live = self.live_image(ip)
-            if live is not None and not live.isNull():
-                image, status = live.copy(), '播放画面 · 点击放大'
-            self.updated.emit(ip, image, status)
+        if self.tokens.get(ip) != token:
+            return
+        live = self.live_image(ip)
+        if live is not None and not live.isNull():
+            image, status = live.copy(), '播放画面 · 点击放大'
+        retry = self.retry_credentials.pop(ip, None)
+        if image is None and retry is not None:
+            # 只补这一次：重试的线程开工时用的就是这组账号，同样的账号不会再登记重试
+            device, credentials = retry
+            for worker in self.active:
+                if worker.device.ip == ip and worker.token == token: worker.cancel.set()
+            self._enqueue(device, credentials)
+            return
+        self.updated.emit(ip, image, status)
 
     @Slot()
     def _finished(self):
         worker = self.sender()
         self.active.discard(worker)
+        self.started_with.pop(worker, None)
         worker.deleteLater()
         self._pump()
 
     def cancel_all(self):
         self.pending.clear()
         self.tokens.clear()
+        self.retry_credentials.clear()
         for worker in self.active: worker.cancel.set()
 
     def busy(self):
