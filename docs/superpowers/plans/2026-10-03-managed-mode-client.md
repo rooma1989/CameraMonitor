@@ -3395,7 +3395,8 @@ class ManagedWindowTests(unittest.TestCase):
         self.assertIn('联系管理员', self.window.welcome.error.text())
         self.assertFalse(self.window.cloud.enabled())
         self.assertFalse(self.window.managed.active)
-        self.assertIsNone(self.window.cloud.settings.value('cloud/standalone'))
+        self.assertEqual('false', str(self.window.cloud.settings.value('cloud/standalone')).lower(),
+                         '解绑后明确记为「要看欢迎页」，下次启动不再按旧配置判成单机')
 
     def test_hello_needs_a_session(self):
         self.assertIsNone(self.window.channel_hello())
