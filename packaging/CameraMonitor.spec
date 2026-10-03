@@ -10,7 +10,7 @@ metadata=[]
 for package in ('keyring','jaraco.classes','jaraco.context','jaraco.functools'):
     metadata += copy_metadata(package)
 a=Analysis([str(root/'packaging'/'launcher.py')],pathex=[str(root)],
-    binaries=[],datas=metadata+[(str(root/"camera_monitor"/"assets"/"app-icon.png"),"camera_monitor/assets")],hiddenimports=['keyring.backends.macOS'],
+    binaries=[],datas=metadata+[(str(root/"camera_monitor"/"assets"/"app-icon.png"),"camera_monitor/assets")],hiddenimports=['keyring.backends.macOS','PySide6.QtWebSockets'],
     hookspath=[],hooksconfig={},runtime_hooks=[],
     excludes=['tkinter','PySide6.QtWebEngineCore','PySide6.QtWebEngineWidgets','PySide6.QtQml','PySide6.QtQuick','keyring.backends.Windows'],
     noarchive=False,optimize=0)

@@ -913,12 +913,20 @@ class Window(QMainWindow):
         event.accept()
 
 
+def allow_session_quit(app,window):
+    # 关机、注销时系统要求所有程序退出；傻瓜模式平时拦着关闭，这时必须放行。
+    # Qt 6.8 在 Windows 上收到 WM_QUERYENDSESSION，在 macOS 上走 applicationShouldTerminate
+    # （⌘Q、程序坞「退出」、注销、关机都走这里），都是先发 commitDataRequest、再关所有窗口。
+    # 所以 macOS 上分不清注销和 ⌘Q，一律放行：现场电脑都是 Windows，macOS 只是开发机
+    app.commitDataRequest.connect(lambda manager:setattr(window,'authorized_quit',True))
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName('Camera Monitor')
     app.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'app-icon.png')))
     app.setStyle('Fusion')
     window = Window()
+    allow_session_quit(app,window)
     window.show()
     sys.exit(app.exec())
 

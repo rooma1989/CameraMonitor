@@ -19,7 +19,7 @@ for package in ('keyring', 'jaraco.classes', 'jaraco.context', 'jaraco.functools
 a = Analysis(
     [str(root / 'packaging' / 'launcher.py')], pathex=[str(root)],
     binaries=[], datas=metadata+[(str(root/"camera_monitor"/"assets"/"app-icon.png"),"camera_monitor/assets")],
-    hiddenimports=['keyring.backends.Windows', 'win32ctypes.pywin32.win32cred'],
+    hiddenimports=['keyring.backends.Windows', 'win32ctypes.pywin32.win32cred', 'PySide6.QtWebSockets'],
     hookspath=[], hooksconfig={}, runtime_hooks=[],
     excludes=['tkinter', 'keyring.backends.macOS', 'PySide6.QtWebEngineCore',
               'PySide6.QtWebEngineWidgets', 'PySide6.QtQml', 'PySide6.QtQuick'],

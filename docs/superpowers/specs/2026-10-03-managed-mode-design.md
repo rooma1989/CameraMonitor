@@ -412,3 +412,19 @@ v0.8 的控制器注释里写着"配置以客户端为准，后台不做表单"�
 - 一个设备码给多台电脑同时使用。
 - 手机端远程控制。
 - 批量把完整模式切换成傻瓜模式（功能文档里的待确认项，等确认需要后再做）。
+
+## 12. 实现时的调整（客户端计划）
+
+- **默认摄像头账号存进钥匙串**：原设计是"只放内存"，现在改为存到钥匙串账户 `__default__` 下；后台没有单独填账号的摄像头，也写入这组账号。这样断网重启后照样能播放。离线缓存只保留默认账号的用户名，不保留密码。
+- **播放状态不新增信号**：没有给 `PlayerWindow` 加 `state_changed`，而是用 `player_state()` 解析现有的状态文字，`ManagedController` 每秒比对一次、有变化才上报。
+- **不加 `force` 参数**：4.6 设想过给 `set_fill_width` / `set_grid_columns` 加 `force` 参数。实际上云端配置直接把值写进设置和 `_fill_width`，演示模式拦不到这条路，所以不需要。
+- **`refresh_snapshots` 的 `command_done`**：表示截图请求都已经排进队列，不代表每张都已上传。后台以截图时间的变化为准。
+- **启动分流**：`cloud/standalone` 是三态（没写过 / true / false），只在没写过时判断一次，判断完就写下结果。判断"本机用过旧版本"只看本程序自己的设置分组（`names` / `appearance` / `monitor`），不看 `allKeys()` 是否为空，原因是 macOS 上 QSettings 会带出系统的全局键。
+- **维护快捷键**：Windows 是 Ctrl+Shift+Alt+Q；macOS 是 Control+Shift+Option+Q。macOS 上不用 ⌘，因为 ⌘⇧⌥Q 是系统的「立即注销」。
+- **下行通道不走系统代理**：和 HTTP 客户端保持一致；连接失败会写日志（同样的错误连续出现只写一次）。
+- **被顶号不自动重连**：设备码被另一台电脑占用（`replaced`）后，本机不自动重连，静默重新登录也不会重新打开通道，要在本机重新手动登录。
+- **HTTP 拒绝也会解绑**：托管电脑通过 HTTP 收到停用、失效、占用这三种拒绝时，和收到 `revoked` 一样，彻底解绑并回到欢迎页。
+- **`revoked` 只在三种情况下发**：解绑电脑（包括删除占用者的监控屏记录）、停用档案、删除档案。重置授权码不发。
+- **默认账号总是下发**：快照里总有 `default_credentials`，没设置时用户名和密码都是空串。
+- **整屏截图的 `ip` 存空串**：不存 NULL，这样唯一键 `(profile_id, kind, ip)` 对整屏截图也能生效。
+- **关机、注销时放行**：`main()` 里把 `commitDataRequest` 接到 `authorized_quit = True`。在 Qt 6.8.3 上实测过：Windows 的 `WM_QUERYENDSESSION`，以及 macOS 的 ⌘Q、程序坞「退出」、注销、关机（都走 `applicationShouldTerminate`），Qt 都会先发 `commitDataRequest`，再关所有窗口。所以 macOS 上分不清注销和 ⌘Q，一律放行；现场电脑都是 Windows，macOS 只是开发机。

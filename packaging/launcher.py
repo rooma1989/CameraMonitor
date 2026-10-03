@@ -17,6 +17,17 @@ def smoke_test(result_path):
     if sys.platform == 'win32':
         assert CredentialStore().vault().priority > 0
     app = QApplication([])
+    from PySide6.QtNetwork import QSslSocket
+    from PySide6.QtWebSockets import QWebSocket
+    # 下行通道走 wss：打包漏了 TLS 后端插件，现场会永远连不上，且没有任何报错
+    assert QSslSocket.supportsSsl(), 'TLS backend missing from the bundle'
+    assert QWebSocket() is not None
+    from PySide6.QtGui import QImage
+    from camera_monitor.snapshots import encode_jpeg
+    # 漏了 imageformats/qjpeg 插件，截图会悄悄全部失败、不报任何错，只能在这里拦住
+    probe = QImage(64, 36, QImage.Format.Format_RGB32)
+    probe.fill(0)
+    assert encode_jpeg(probe, 64, 100_000).startswith(b'\xff\xd8'), 'JPEG imageformat plugin missing from the bundle'
     window = Window()
     assert not window.windowIcon().isNull(), "Bundled application icon missing"
     window.show()
