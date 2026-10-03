@@ -90,6 +90,34 @@ class ManagedWindowTests(unittest.TestCase):
         self.assertEqual('false', str(self.window.cloud.settings.value('cloud/standalone')).lower(),
                          '解绑后明确记为「要看欢迎页」，下次启动不再按旧配置判成单机')
 
+    def test_being_revoked_over_the_channel_uses_the_specific_message(self):
+        self.enter_managed()
+
+        self.window.on_channel_message({'type': 'revoked', 'failure_code': 'PROFILE_IN_USE'})
+
+        self.assert_fully_unbound('该设备码已在另一台电脑上使用，请联系管理员解绑后重试。')
+
+    def test_being_revoked_over_the_channel_leaves_a_full_mode_computer_bound(self):
+        # 完整模式有侧边栏：通道说收回了，只停通道，交给 HTTP 那边去问清楚、如实显示
+        settings = self.window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        self.window.cloud.token = 'cm1.t'
+        self.window.cloud._apply(snapshot())
+        QApplication.processEvents()
+        stops, wall_stops, refreshes = [], [], []
+        self.window.channel.stop = lambda: stops.append(1)
+        self.window.wall.stop_everything = lambda: wall_stops.append(1)
+        self.window.cloud.refresh = lambda: refreshes.append(1)
+
+        self.window.on_channel_message({'type': 'revoked', 'failure_code': 'PROFILE_IN_USE'})
+
+        self.assertEqual([1], stops)
+        self.assertEqual([1], refreshes, '要让 HTTP 拿到服务端原话显示在侧边栏')
+        self.assertEqual([], wall_stops, '完整模式的画面不能因为通道一句话就停掉')
+        self.assertTrue(self.window.cloud.enabled())
+        self.assertEqual('cm1.t', self.window.cloud.token)
+        self.assertTrue(self.window.welcome.isHidden())
+
     def test_hello_needs_a_session(self):
         self.assertIsNone(self.window.channel_hello())
 

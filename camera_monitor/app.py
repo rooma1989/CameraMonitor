@@ -731,7 +731,15 @@ class Window(QMainWindow):
         kind=payload.get('type')
         if kind in ('welcome','config_changed'):self.cloud.note_remote_version(payload.get('version',0))
         elif kind=='command':self.managed.run_command(payload)
-        elif kind=='revoked':self.unbind_cloud('该设备码已被管理员停用或收回，请联系管理员。')
+        elif kind=='revoked':
+            if self.managed.active:
+                self.on_cloud_revoked(str(payload.get('failure_code') or ''))
+            else:
+                # 完整模式有侧边栏，不能因为通道一句话就清掉登录、停掉画面、盖上欢迎页。
+                # 停掉通道，让 HTTP 去问一次：真被收回了，服务端原话会显示在侧边栏，
+                # 之后的处理和 HTTP 被拒完全一样
+                self.channel.stop()
+                self.cloud.refresh()
 
     def on_channel_denied(self,failure_code):
         if failure_code=='INVALID_TOKEN':self.cloud.relogin()
