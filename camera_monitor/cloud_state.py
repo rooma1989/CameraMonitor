@@ -19,6 +19,22 @@ STREAM_MODES = ('onvif', 'dahua', 'manual')
 MAX_SLOTS = 25
 EQUAL_CAPACITIES = (4, 9, 12, 16, 20, 25)
 CAPACITIES = (4, 6, 9, 10, 12, 15, 16, 20, 25)
+MODES = ('full', 'managed')
+# 钥匙串里专门存「这个点位的默认摄像头账号」的那一条，和摄像头 IP 不会撞名
+DEFAULT_CREDENTIAL_ACCOUNT = '__default__'
+
+
+def profile_mode(snapshot) -> str:
+    mode = str((snapshot or {}).get('mode') or 'full')
+    return mode if mode in MODES else 'full'
+
+
+def _default_credentials(snapshot):
+    """只有带着 password 键的那份（云端直接下发的）才算数；离线缓存里剥掉了密码，返回 None。"""
+    value = (snapshot or {}).get('default_credentials')
+    if not isinstance(value, dict) or 'password' not in value:
+        return None
+    return str(value.get('username') or ''), str(value.get('password') or '')
 
 
 def mode_index(stream_mode) -> int:
@@ -104,7 +120,7 @@ def layout_entry(capacity, columns, fill_width, organization) -> dict:
 
 
 def cacheable(snapshot) -> dict:
-    """离线缓存用的副本：剥掉摄像头密码。
+    """离线缓存用的副本：剥掉摄像头密码和默认密码。
 
     缓存落在 QSettings 的明文 ini / plist 里，密码只能留在系统钥匙串。
     重放这份缓存时 apply_snapshot 不会碰钥匙串，凭据依然可用。
@@ -112,8 +128,13 @@ def cacheable(snapshot) -> dict:
     cameras = []
     for camera in snapshot.get('cameras') or []:
         cameras.append({key: value for key, value in camera.items() if key != 'password'})
+    defaults = snapshot.get('default_credentials')
     return {
         'version': snapshot.get('version', 0),
+        'mode': profile_mode(snapshot),
+        'escape_password_hash': snapshot.get('escape_password_hash') or '',
+        'default_credentials': ({'username': str(defaults.get('username') or '')}
+                                if isinstance(defaults, dict) else None),
         'profile': dict(snapshot.get('profile') or {}),
         'layout': dict(snapshot.get('layout') or {}),
         'cameras': cameras,
@@ -136,6 +157,9 @@ class AppliedConfig:
     organization: str = ''
     fill_width: bool = False
     credential_failures: list = field(default_factory=list)
+    mode: str = 'full'
+    fullscreen: bool = False
+    escape_password_hash: str = ''
 
 
 def apply_snapshot(snapshot, names: DeviceNames, options: ConnectionOptions, store) -> AppliedConfig:
@@ -155,6 +179,19 @@ def apply_snapshot(snapshot, names: DeviceNames, options: ConnectionOptions, sto
     applied = AppliedConfig(capacity=layout['capacity'],
                             organization=layout['organization'],
                             fill_width=layout['fill_width'])
+    applied.mode = profile_mode(snapshot)
+    applied.fullscreen = bool((snapshot.get('layout') or {}).get('fullscreen', False))
+    applied.escape_password_hash = str(snapshot.get('escape_password_hash') or '')
+
+    defaults = _default_credentials(snapshot)
+    if defaults is not None:
+        try:
+            if any(defaults):
+                store.save(DEFAULT_CREDENTIAL_ACCOUNT, *defaults)
+            else:
+                store.forget(DEFAULT_CREDENTIAL_ACCOUNT)
+        except CredentialError:
+            applied.credential_failures.append(DEFAULT_CREDENTIAL_ACCOUNT)
 
     for camera in cameras:
         ip = str(camera.get('ip', ''))
@@ -180,6 +217,9 @@ def apply_snapshot(snapshot, names: DeviceNames, options: ConnectionOptions, sto
         if 'password' in camera:
             username = str(camera.get('username') or '')
             password = str(camera.get('password') or '')
+            if not (username or password) and defaults and any(defaults):
+                # 后台没单独填的摄像头用点位默认账号；写进钥匙串，断网重启也能播
+                username, password = defaults
             try:
                 if username or password:
                     store.save(ip, username, password)
