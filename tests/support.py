@@ -62,6 +62,8 @@ def make_window(case, fresh_install=False, **kwargs):
         from PySide6.QtWidgets import QApplication
 
         window.cloud.stop()
+        window.channel.stop()
+        window.managed.status_timer.stop()
         window.thumbnail_timer.stop()
         window.thumbnails.cancel_all()
         window.hide()

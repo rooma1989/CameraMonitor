@@ -23,6 +23,11 @@ from .cloud_state import camera_entry, layout_entry, stream_mode
 from .cloud_sync import CloudSync
 from . import startup
 from .welcome import WelcomePage
+from .autostart import AutoStart
+from .cloud import DEFAULT_BASE_URL
+from .cloud_channel import CloudChannel, channel_url
+from .managed_mode import ManagedController
+from .snapshots import SnapshotUploader
 
 
 class SearchWorker(QThread):
@@ -45,7 +50,7 @@ class SearchWorker(QThread):
 class Window(QMainWindow):
     scan_completed=Signal(bool)
 
-    def __init__(self, device_names=None, cloud_settings=None, connection_options=None):
+    def __init__(self, device_names=None, cloud_settings=None, connection_options=None, autostart=None):
         super().__init__()
         from .device_names import DeviceNames
         self.device_names = device_names if device_names is not None else DeviceNames()
@@ -214,6 +219,17 @@ class Window(QMainWindow):
         self.cloud.applied.connect(self.apply_cloud_config)
         self.cloud.session_changed.connect(self.cloud_session_changed)
         self.cloud.login_result.connect(self.cloud_login_result)
+        self.cloud.mode_changed.connect(self.on_cloud_mode)
+        self.channel=CloudChannel(channel_url(getattr(self.cloud.client,'base_url',DEFAULT_BASE_URL)),
+            self.channel_hello,parent=self)
+        self.channel.message.connect(self.on_channel_message)
+        self.channel.denied.connect(self.on_channel_denied)
+        self.channel.replaced.connect(self.on_channel_replaced)
+        # 被别处顶掉之后，只有人亲手重新登录才重连；静默重登不算（见 on_channel_replaced）
+        self.channel_replaced=False
+        self.snapshot_uploader=SnapshotUploader(self.upload_snapshot,self)
+        self.managed=ManagedController(self,self.channel,self.snapshot_uploader,
+            autostart if autostart is not None else AutoStart())
         # 同样只用绑定方法：device_names 的生命周期可能比窗口长
         self.device_names.changed.connect(self.note_cloud_change)
         self.device_names.appearance_changed.connect(self.note_cloud_change)
@@ -228,7 +244,7 @@ class Window(QMainWindow):
         # 队列，窗口若在事件循环跑起来之前就被销毁，这个事件仍会触发并访问已释放的对象。
         self.cloud_start_timer=QTimer(self)
         self.cloud_start_timer.setSingleShot(True)
-        self.cloud_start_timer.timeout.connect(self.cloud.start)
+        self.cloud_start_timer.timeout.connect(self.start_cloud)
         self.cloud_start_timer.start(0)
 
     def set_welcome_visible(self,visible):
@@ -270,6 +286,7 @@ class Window(QMainWindow):
         root=self.centralWidget()
         self.settings_panel.setGeometry(max(0,root.width()-390),20,370,max(200,root.height()-40))
         self.settings_tab.setGeometry(max(0,root.width()-48),26,36,108)
+        if hasattr(self,'managed'):self.managed.refresh_overlays()
         if hasattr(self,'welcome'):
             self.welcome.setGeometry(root.rect())
             if not self.welcome.isHidden():self.welcome.raise_()
@@ -656,6 +673,8 @@ class Window(QMainWindow):
     # ---------- 云端同步 ----------
 
     def cloud_login(self,auth_code):
+        # 人亲手输了设备码：哪怕之前被别处顶掉过，这次登录成功也要把通道接回来
+        self.channel_replaced=False
         self.cloud.login(auth_code,device_name=platform.node() or '监控屏',app_version=__version__)
 
     def cloud_logout(self):
@@ -669,8 +688,69 @@ class Window(QMainWindow):
         startup.choose_standalone(self.cloud.settings)
         self.set_welcome_visible(False)
 
+    def start_cloud(self):
+        # 先进傻瓜模式再铺缓存：锁好界面之后才把全屏之类的设置落下去
+        if self.cloud.enabled() and self.cloud.mode()=='managed':self.managed.enter()
+        self.cloud.start()
+        if self.cloud.token:self.channel.start()
+
+    def show_welcome(self,message=''):
+        self.welcome.set_busy(False)
+        self.welcome.show_error(message)
+        # 必须走 set_welcome_visible：它会同时禁用下面的界面和快捷键
+        self.set_welcome_visible(True)
+
+    def unbind_cloud(self,message=''):
+        """维护人员解绑，或后台收回了设备码：回到输入设备码的那一页。本机摄像头配置保留。"""
+        self.channel.stop()
+        self.managed.leave()
+        self.cloud.logout()
+        startup.clear_standalone(self.cloud.settings)
+        if self.wall is not None:self.wall.stop_everything()
+        self.show_welcome(message)
+
+    def on_cloud_mode(self,mode):
+        if mode=='managed':self.managed.enter()
+        else:self.managed.leave()
+
+    def channel_hello(self):
+        if not self.cloud.token:return None
+        return {'token':self.cloud.token,'client_uid':self.cloud.client_uid(),'app_version':__version__}
+
+    def on_channel_message(self,payload):
+        kind=payload.get('type')
+        if kind in ('welcome','config_changed'):self.cloud.note_remote_version(payload.get('version',0))
+        elif kind=='command':self.managed.run_command(payload)
+        elif kind=='revoked':self.unbind_cloud('该设备码已被管理员停用或收回，请联系管理员。')
+
+    def on_channel_denied(self,failure_code):
+        if failure_code=='INVALID_TOKEN':self.cloud.relogin()
+        else:self.cloud.refresh()
+
+    def on_channel_replaced(self):
+        # 同一个设备码在别处连上了。通道自己已经不再重连；这里还要挡住之后的静默重登
+        # （它也会发 session_changed(True)）——否则这边一重连又把那边顶掉，两台来回抢。
+        # 配置同步照常走 HTTP，画面不受影响；要接回来就重新输一次设备码，或者重启软件。
+        self.channel_replaced=True
+        self.channel.stop()
+        self.cloud_panel.set_status('该设备码已在另一台电脑上登录，本机不再接收云端指令。'
+            '如需由本机接管，请重新登录。',error=True)
+
+    def upload_snapshot(self,kind,jpeg,ip=''):
+        token=self.cloud.token
+        if not token:raise RuntimeError('尚未登录云端')
+        return self.cloud.client.upload_snapshot(token,kind,jpeg,ip)
+
     def cloud_session_changed(self,connected):
         self.cloud_panel.set_connected(connected,self.cloud.profile_name())
+        if connected:
+            if not self.channel_replaced:self.channel.start()
+            return
+        self.channel.stop()
+        if self.managed.active:
+            # 傻瓜模式没有侧边栏可以重新登录，只能回到欢迎页
+            self.managed.leave()
+            self.show_welcome('云端登录已失效，请重新输入设备码。')
 
     def cloud_login_result(self,ok,message):
         self.cloud_panel.set_status(message,error=not ok)
@@ -756,6 +836,7 @@ class Window(QMainWindow):
         # 配置回来了画面却是黑的，还得人一格一格去点连接。既然摄像头、通道和
         # 密码都齐了，就直接连上。已经在播的那几格不会被打断。
         self.wall.connect_all()
+        if result.mode=='managed':self.managed.apply(result)
 
     def apply_cloud_stream(self,tile,stream):
         if not stream:return
@@ -778,10 +859,15 @@ class Window(QMainWindow):
             event.ignore();return
         self.closing=True
         if self.worker and self.worker.isRunning():self.worker.cancel.set()
+        # 先断下行通道再去等线程：cloud.stop() 可能要等好几秒，重启时新进程已经连上来，
+        # 旧连接多挂这几秒就会和它互相顶
+        self.channel.stop()
+        self.managed.status_timer.stop()
+        self.snapshot_uploader.stop()
         self.cloud.stop()
         self.thumbnail_timer.stop()
         self.thumbnails.cancel_all()
-        if self.thumbnails.busy() or self.cloud.busy():
+        if self.thumbnails.busy() or self.cloud.busy() or self.snapshot_uploader.busy():
             event.ignore();QTimer.singleShot(200,self.close);return
         if self.wall is not None:
             self.wall.close()
