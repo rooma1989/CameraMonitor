@@ -69,6 +69,11 @@ class CloudSync(QObject):
         self.calls = []
         self.closing = False
         self._relogin_pending = ''
+        # 会话代数。每次退出（含解绑）加一；发出去的请求记下当时的代数，结果回来时
+        # 代数已经变了就整个丢掉。光看 token 不够：静默重登的结果本身就带着新令牌，
+        # 解绑前发出、解绑后才到，会把这台电脑又绑回去。退出后人亲手发起的登录
+        # 带的是新代数，照常生效。
+        self._generation = 0
         # 断网时的改动不能悄悄丢掉：记下来，等连上了补传
         self.pending_changes = False
         # 正在把云端配置往本机写。这期间本机存储发出的「变了」全是我们自己写的，
@@ -207,6 +212,9 @@ class CloudSync(QObject):
                        context=code)
 
     def logout(self):
+        self._generation += 1
+        # 在路上的静默重登已经作废；不清掉的话，之后的令牌失效再也触发不了重登
+        self._relogin_pending = ''
         self.poll_timer.stop()
         self.push_timer.stop()
         self.token = ''
@@ -284,6 +292,7 @@ class CloudSync(QObject):
     def _dispatch(self, kind, run, context=''):
         call = CloudCall(kind, run, self)
         call.context = context
+        call.generation = self._generation
         call.done.connect(self._on_done)
         call.failed.connect(self._on_failed)
         call.conflicted.connect(self._on_conflict)
@@ -300,8 +309,13 @@ class CloudSync(QObject):
         sender = self.sender()
         return getattr(sender, 'context', '')
 
+    def _stale(self):
+        """这个结果是不是上一段会话（退出、解绑之前）发出的请求带回来的。"""
+        sender = self.sender()
+        return getattr(sender, 'generation', self._generation) < self._generation
+
     def _on_done(self, kind, payload):
-        if self.closing:
+        if self.closing or self._stale():
             return
 
         if kind == 'login':
@@ -381,7 +395,8 @@ class CloudSync(QObject):
         self.status.emit(persist_warning or message)
 
     def _on_conflict(self, kind, snapshot):
-        if self.closing:
+        # 和 _on_done 一样：已经退出、被解绑或被占用清掉了令牌，结果就不能再落到本机
+        if self.closing or self._stale() or not self.token:
             return
         # 服务端已经把最新配置一并返回，直接采用，不必再发一次请求
         self.pending_changes = False
@@ -392,7 +407,8 @@ class CloudSync(QObject):
         self.status.emit('配置已在别处更新，已载入最新版本。')
 
     def _on_failed(self, kind, message, failure_code):
-        if self.closing:
+        # 上一段会话的失败：再去静默重登、再报未连接都只会打扰已经解绑的界面
+        if self.closing or self._stale():
             return
 
         if kind == 'login':

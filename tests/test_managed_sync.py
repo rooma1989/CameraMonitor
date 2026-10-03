@@ -316,5 +316,68 @@ class ManagedSyncTests(unittest.TestCase):
         self.assertIsNone(self.sync.cached_snapshot())
 
 
+    def test_a_silent_relogin_that_lands_after_logout_is_ignored(self):
+        # 维护人员解绑时静默重登还在路上：它晚到的成功结果不能把这台电脑又绑回去
+        self.settings.setValue('cloud/enabled', True)
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+        self.client.login_result = dict(managed(), token='cm1.new')
+        sessions = []
+        self.sync.session_changed.connect(sessions.append)
+
+        self.sync.relogin()
+        self.sync.logout()
+        self.assertTrue(self.settled())
+
+        self.assertFalse(self.sync.enabled())
+        self.assertFalse(self.sync.token)
+        self.assertIsNone(self.session_store.load_session())
+        self.assertEqual('full', self.sync.mode())
+        self.assertIsNone(self.sync.cached_snapshot())
+        self.assertNotIn(True, sessions)
+
+    def test_a_manual_login_after_logout_is_honoured(self):
+        self.settings.setValue('cloud/enabled', True)
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+
+        self.sync.relogin()
+        self.sync.logout()
+        self.sync.login('new-code')
+        self.assertTrue(self.settled())
+
+        self.assertTrue(self.sync.enabled())
+        self.assertEqual('cm1.token', self.sync.token)
+        self.assertEqual('new-code', self.session_store.load_session()['auth_code'])
+
+    def test_a_failed_call_that_lands_after_logout_is_ignored(self):
+        # 退出前发出的请求晚到一个「令牌失效」：不能再去静默重登、再报一次未连接
+        self.settings.setValue('cloud/enabled', True)
+        self.session_store.save_session('code-in-vault', 'old-token')
+        self.sync.token = 'old-token'
+        self.client.raises['fetch'] = CloudError('登录已失效', 'INVALID_TOKEN')
+        sessions = []
+
+        self.sync.refresh()
+        self.sync.logout()
+        self.sync.session_changed.connect(sessions.append)
+        self.assertTrue(self.settled())
+
+        self.assertEqual([], sessions)
+        self.assertNotIn('login', self.kinds())
+
+    def test_a_conflict_without_a_session_is_ignored(self):
+        # 被别处占用后令牌已清掉（没走 logout）；这时晚到的冲突结果同样不能落到本机
+        applied = []
+        self.sync.applied.connect(applied.append)
+        self.sync.token = ''
+
+        self.sync._on_conflict('push', managed(version=7))
+
+        self.assertEqual([], applied)
+        self.assertIsNone(self.sync.cached_snapshot())
+        self.assertEqual('full', self.sync.mode())
+
+
 if __name__ == '__main__':
     unittest.main()

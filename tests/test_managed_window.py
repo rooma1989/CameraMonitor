@@ -1,12 +1,13 @@
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+import time
 import unittest
 from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication
 
 from support import make_window
-from test_cloud_sync import snapshot
+from test_cloud_sync import FakeClient, snapshot
 from test_credentials import MemoryVault
 
 
@@ -244,6 +245,31 @@ class ManagedWindowTests(unittest.TestCase):
         self.assertFalse(self.window.welcome.isHidden())
         self.assertEqual(message, self.window.welcome.error.text())
         self.assertEqual('false', str(settings.value('cloud/standalone')).lower())
+
+    def test_a_silent_relogin_that_lands_after_unbinding_does_not_rebind(self):
+        self.enter_managed()
+        client = FakeClient()
+        client.login_result = dict(managed(), token='cm1.new')
+        self.window.cloud.client = client
+
+        self.window.cloud.relogin()
+        self.window.unbind_cloud()
+        self.assertTrue(self.settle())
+
+        self.assertFalse(self.window.managed.active)
+        self.assertFalse(self.window.cloud.enabled())
+        self.assertEqual('full', self.window.cloud.mode())
+        self.assertIsNone(self.window.cloud.session.load_session())
+        self.assertFalse(self.window.welcome.isHidden())
+
+    def settle(self, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            QApplication.processEvents()
+            if not self.window.cloud.busy() and not self.window.cloud.calls:
+                return True
+            time.sleep(0.01)
+        return False
 
     def test_permanent_http_denials_unbind_a_managed_computer(self):
         cases = {
