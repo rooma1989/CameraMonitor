@@ -419,7 +419,7 @@ v0.8 的控制器注释里写着"配置以客户端为准，后台不做表单"�
 - **播放状态不新增信号**：没有给 `PlayerWindow` 加 `state_changed`，而是用 `player_state()` 解析现有的状态文字，`ManagedController` 每秒比对一次、有变化才上报。
 - **不加 `force` 参数**：4.6 设想过给 `set_fill_width` / `set_grid_columns` 加 `force` 参数。实际上云端配置直接把值写进设置和 `_fill_width`，演示模式拦不到这条路，所以不需要。
 - **`refresh_snapshots` 的 `command_done`**：表示截图请求都已经排进队列，不代表每张都已上传。后台以截图时间的变化为准。
-- **启动分流**：`cloud/standalone` 是三态（没写过 / true / false），只在没写过时判断一次，判断完就写下结果。判断"本机用过旧版本"只看本程序自己的设置分组（`names` / `appearance` / `monitor`），不看 `allKeys()` 是否为空，原因是 macOS 上 QSettings 会带出系统的全局键。
+- **启动分流**：`cloud/standalone` 是三态（没写过 / true / false），只在没写过时判断一次，判断完就写下结果。判断"本机用过旧版本"只看本程序自己的设置分组（`names` / `appearance` / `monitor`）和大屏密码 `fullscreen/password`，不看 `allKeys()` 是否为空，原因是 macOS 上 QSettings 会带出系统的全局键。大屏密码也算数：v0.6～v0.8 一启动就会写下初始密码，而这次判断只做一次、并且赶在本次进程的 `ScreenLock` 写入之前完成，所以能看到它就说明旧版本在这台电脑上运行过。
 - **维护快捷键**：Windows 是 Ctrl+Shift+Alt+Q；macOS 是 Control+Shift+Option+Q。macOS 上不用 ⌘，因为 ⌘⇧⌥Q 是系统的「立即注销」。
 - **下行通道不走系统代理**：和 HTTP 客户端保持一致；连接失败会写日志（同样的错误连续出现只写一次）。
 - **被顶号不自动重连**：设备码被另一台电脑占用（`replaced`）后，本机不自动重连，静默重新登录也不会重新打开通道，要在本机重新手动登录。
@@ -428,3 +428,9 @@ v0.8 的控制器注释里写着"配置以客户端为准，后台不做表单"�
 - **默认账号总是下发**：快照里总有 `default_credentials`，没设置时用户名和密码都是空串。
 - **整屏截图的 `ip` 存空串**：不存 NULL，这样唯一键 `(profile_id, kind, ip)` 对整屏截图也能生效。
 - **关机、注销时放行**：`main()` 里把 `commitDataRequest` 接到 `authorized_quit = True`。在 Qt 6.8.3 上实测过：Windows 的 `WM_QUERYENDSESSION`，以及 macOS 的 ⌘Q、程序坞「退出」、注销、关机（都走 `applicationShouldTerminate`），Qt 都会先发 `commitDataRequest`，再关所有窗口。所以 macOS 上分不清注销和 ⌘Q，一律放行；现场电脑都是 Windows，macOS 只是开发机。
+- **远程搜索后的截图会试默认账号**：4.7 写的是不在墙上的摄像头"免密截一张"。实际做法是：这台摄像头本机没存过账号，就用点位的默认账号（钥匙串 `__default__`）去截图。原因是现场摄像头几乎都设了密码，免密截图基本拿不到画面，后台的人就没法靠预览认出是哪一台。风险：局域网里如果混进一台冒充摄像头的设备，它会收到默认摄像头密码。这个风险我们接受，因为不看预览就没法认摄像头；默认账号只用于摄像头，不是后台或电脑的密码。云端配置落下后，远程搜到但还没摆上墙的摄像头仍然记着，后台照样能要它们的截图。
+- **完整模式收到 `revoked`**：只有托管电脑按 `failure_code` 彻底解绑。完整模式有侧边栏，所以只停掉下行通道，再走一次 HTTP 拉配置：如果真的被收回，服务端的原话会显示在侧边栏，后续处理和 HTTP 被拒时一样。
+- **退出或解绑之前发出的请求作废**：`CloudSync` 维护一个会话代数，`logout()` 时加一。之前发出的请求（包括还没回来的静默重登）结果晚到时一律丢弃，免得把刚解绑的电脑又绑回去。退出后人手发起的登录用的是新代数，正常生效。
+- **钥匙串暂时读不出会话**：启动时读会话遇到安全存储错误，不当作登录失效处理。照常铺开本机缓存，侧边栏按钮显示未连接；托管电脑保持锁定继续播放，不删开机自启，也不回欢迎页。
+- **`restart_app` 先启动新进程**：先回 `ack`，同步调用 `QProcess.startDetached`（不阻塞）。启动成功才回 `command_done ok=true`，300 ms 后退出；启动失败就回 `command_done ok=false error=RESTART_FAILED`，当前进程继续运行。
+- **日志文件**：`main()` 把日志写到 `QStandardPaths.AppDataLocation/logs/camera_monitor.log`，级别 INFO，每个文件 1 MB，保留 3 份旧文件。Windows 上是 `%APPDATA%\Camera Monitor\logs\`，macOS 上是 `~/Library/Application Support/Camera Monitor/logs/`。启动时记一行版本号，并注明是不是开机自启（`--autostart`）。目录或文件写不了时就不写文件，软件照常运行。
