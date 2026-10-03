@@ -1,10 +1,13 @@
 from __future__ import annotations
 from .choices import ChoiceButton as QComboBox
 
+import logging
+import logging.handlers
+import os
 import platform
 import sys
 import threading
-from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent, QSettings
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent, QSettings, QStandardPaths
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -23,11 +26,16 @@ from .cloud_state import camera_entry, layout_entry, stream_mode
 from .cloud_sync import CloudSync
 from . import startup
 from .welcome import WelcomePage
-from .autostart import AutoStart
+from .autostart import AutoStart, FLAG as AUTOSTART_FLAG
 from .cloud import DEFAULT_BASE_URL
 from .cloud_channel import CloudChannel, channel_url
 from .managed_mode import ManagedController
 from .snapshots import SnapshotUploader
+
+logger=logging.getLogger(__name__)
+LOG_FILE='camera_monitor.log'
+LOG_MAX_BYTES=1024*1024
+LOG_BACKUPS=3
 
 # 后台永久拒绝时给现场看的话：服务端原话面向管理员，这里说清楚该找谁、该做什么
 REVOKED_MESSAGES={
@@ -934,9 +942,36 @@ def allow_session_quit(app,window):
     # 所以 macOS 上分不清注销和 ⌘Q，一律放行：现场电脑都是 Windows，macOS 只是开发机
     app.commitDataRequest.connect(lambda manager:setattr(window,'authorized_quit',True))
 
+def setup_logging(directory):
+    """现场电脑出了问题只能靠日志：写到文件里，满 1 MB 轮换，留 3 份旧的。
+
+    目录建不出来、文件打不开时不写文件，软件照常运行——日志不能反过来让监控起不来。
+    返回装上的处理器，没装上返回 None。
+    """
+    try:
+        os.makedirs(directory,exist_ok=True)
+        handler=logging.handlers.RotatingFileHandler(os.path.join(directory,LOG_FILE),
+            maxBytes=LOG_MAX_BYTES,backupCount=LOG_BACKUPS,encoding='utf-8')
+    except OSError:
+        return None
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s'))
+    root=logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    return handler
+
+def log_startup(argv):
+    # 记下是开机自启还是人手打开的：现场说「开机没起来」时先看这一行
+    logger.info('Camera Monitor %s 启动%s',__version__,'（开机自启）' if AUTOSTART_FLAG in argv else '')
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName('Camera Monitor')
+    # 要在设好程序名之后取目录，否则会落到没有程序名的公共目录里。
+    # 取不到目录时返回空串，拼出来就成了当前目录下的 logs，宁可不写
+    data=QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    if data:setup_logging(os.path.join(data,'logs'))
+    log_startup(sys.argv)
     app.setWindowIcon(QIcon(str(Path(__file__).parent/'assets'/'app-icon.png')))
     app.setStyle('Fusion')
     window = Window()
