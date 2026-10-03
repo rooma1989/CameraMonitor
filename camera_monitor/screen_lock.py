@@ -50,9 +50,17 @@ class ScreenLock:
         """
         if record is None or not self.valid_record(record):
             return False
-        if self.settings.value(self.KEY) != record:
+        previous = self.settings.value(self.KEY)
+        if previous != record:
             self.settings.setValue(self.KEY, record)
             self.settings.sync()
+            if self.settings.status() != QSettings.Status.NoError:
+                # 写不进本机设置：内存里回滚，如实告诉调用方，别让新密码撑到重启就悄悄失效
+                if previous is None:
+                    self.settings.remove(self.KEY)
+                else:
+                    self.settings.setValue(self.KEY, previous)
+                return False
         return True
 
     def _save(self, password):

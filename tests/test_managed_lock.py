@@ -31,6 +31,30 @@ class CloudEscapePasswordTests(unittest.TestCase):
             self.assertFalse(self.lock.set_record(bad), bad)
         self.assertTrue(self.lock.verify('000000'))
 
+    def test_a_record_that_cannot_be_written_is_reported_and_the_old_password_survives(self):
+        folder = tempfile.TemporaryDirectory()
+
+        def restore():
+            os.chmod(folder.name, 0o755)
+            path = os.path.join(folder.name, 'ro.ini')
+            if os.path.exists(path):
+                os.chmod(path, 0o644)
+            folder.cleanup()
+
+        self.addCleanup(restore)
+        path = os.path.join(folder.name, 'ro.ini')
+        settings = QSettings(path, QSettings.Format.IniFormat)
+        lock = ScreenLock(settings)  # 先写下默认密码，再把文件变成只读
+        settings.sync()
+        os.chmod(path, 0o444)
+        os.chmod(folder.name, 0o555)
+
+        self.assertFalse(lock.set_record(VECTOR))
+
+        fresh = ScreenLock(QSettings(path, QSettings.Format.IniFormat))
+        self.assertTrue(fresh.verify('000000'))
+        self.assertFalse(fresh.verify('246810'))
+
 
 if __name__ == '__main__':
     unittest.main()
