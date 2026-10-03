@@ -78,18 +78,27 @@ class CloudClient:
             'cameras': cameras,
         })
 
+    def upload_snapshot(self, token, kind, jpeg, ip=''):
+        """kind 是 camera（某一路）或 screen（整个大屏）。"""
+        form = {'kind': kind}
+        if ip:
+            form['ip'] = ip
+        return self._call('POST', '/snapshots', token=token, form=form,
+                          files={'image': ('snapshot.jpg', jpeg, 'image/jpeg')})
+
     # ---------- 内部 ----------
 
-    def _call(self, method, path, token=None, body=None):
+    def _call(self, method, path, token=None, body=None, form=None, files=None):
         headers = {'Accept': 'application/json'}
         if token:
             headers['token'] = token
 
+        payload = {'data': form, 'files': files} if files else {'json': body}
         try:
             response = self.session.request(
                 method, self.base_url + path,
-                json=body, headers=headers, timeout=self.timeout,
-                allow_redirects=False,
+                headers=headers, timeout=self.timeout,
+                allow_redirects=False, **payload,
             )
         except requests.Timeout:
             raise CloudError('连接云端超时，请检查网络后重试。') from None
