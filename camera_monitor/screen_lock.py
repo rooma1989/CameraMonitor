@@ -34,6 +34,27 @@ class ScreenLock:
         except (AttributeError, TypeError, ValueError):
             return False
 
+    @classmethod
+    def valid_record(cls, record):
+        try:
+            algorithm, rounds, salt, digest = str(record).split('$')
+            return (algorithm == 'pbkdf2_sha256' and int(rounds) == cls.ITERATIONS
+                    and len(bytes.fromhex(salt)) == 16 and len(bytes.fromhex(digest)) == 32)
+        except (TypeError, ValueError):
+            return False
+
+    def set_record(self, record):
+        """采用云端算好的维护密码记录（与 _save 写出的格式完全相同）。
+
+        格式不对就不动本机，宁可沿用旧密码也不能把现场锁死。
+        """
+        if record is None or not self.valid_record(record):
+            return False
+        if self.settings.value(self.KEY) != record:
+            self.settings.setValue(self.KEY, record)
+            self.settings.sync()
+        return True
+
     def _save(self, password):
         salt = secrets.token_bytes(16)
         digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, self.ITERATIONS)
