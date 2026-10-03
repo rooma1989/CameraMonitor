@@ -11,7 +11,7 @@ import uuid
 
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal
 
-from . import cloud_state
+from . import __version__, cloud_state
 from .cloud import (READ_TIMEOUT, CloudAuthError, CloudClient, CloudConflict,
                     CloudError)
 from .credentials import CloudSessionStore, CredentialError
@@ -521,8 +521,10 @@ class CloudSync(QObject):
         self._relogin_pending = code
         self.status.emit('云端登录已过期，正在自动重新登录…')
         uid = self.client_uid()
-        # 一直占着，直到这次登录结束（成功或失败都在 _on_done/_on_failed 里清掉）
-        self._dispatch('login', lambda: self.client.login(code, uid), context=code)
+        # 一直占着，直到这次登录结束（成功或失败都在 _on_done/_on_failed 里清掉）。
+        # 带上版本号：后台靠它判断这台电脑是不是太旧、用不了傻瓜模式
+        self._dispatch('login', lambda: self.client.login(code, uid, app_version=__version__),
+                       context=code)
 
     def _apply(self, snapshot, announce=True):
         # 往本机存储写的时候，DeviceNames 这些会发「变了」的信号，界面那边接着

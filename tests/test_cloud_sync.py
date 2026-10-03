@@ -7,6 +7,7 @@ import unittest
 from PySide6.QtCore import QEvent, QSettings
 from PySide6.QtWidgets import QApplication
 
+from camera_monitor import __version__
 from camera_monitor.cloud import CloudAuthError, CloudConflict, CloudError
 from camera_monitor.cloud_sync import CloudSync
 from camera_monitor.connection_options import ConnectionOptions
@@ -37,6 +38,7 @@ class FakeClient:
 
     def __init__(self):
         self.login_result = dict(snapshot(), token='cm1.token', expires_in=99)
+        self.login_versions = []
         self.fetch_result = snapshot()
         self.ping_result = {'version': 1, 'profile_name': '一楼大厅'}
         self.push_result = snapshot(version=2)
@@ -50,6 +52,7 @@ class FakeClient:
 
     def login(self, auth_code, client_uid, device_name='', app_version=''):
         self.calls.append(('login', auth_code, client_uid))
+        self.login_versions.append(app_version)
         self._maybe_raise('login')
         return self.login_result
 
@@ -491,6 +494,19 @@ class CloudSyncTest(unittest.TestCase):
         self.assertTrue(self.settled())
 
         self.assertTrue(self.sync.token, '应当用保存的授权码自动重登，不打扰现场')
+
+    def test_the_silent_relogin_reports_the_app_version(self):
+        self.sync.login('code12345', app_version=__version__)
+        self.assertTrue(self.settled())
+        self.client.login_versions.clear()
+        self.client.raises['fetch'] = CloudAuthError('登录已失效', 'INVALID_TOKEN')
+
+        self.sync.refresh()
+        self.assertTrue(self.pump(lambda: self.client.login_versions))
+        self.assertTrue(self.settled())
+
+        # 后台靠版本号判断这台电脑能不能用傻瓜模式，自动重登也得带上
+        self.assertEqual([__version__], self.client.login_versions)
 
     # ---------- 退出 ----------
 
