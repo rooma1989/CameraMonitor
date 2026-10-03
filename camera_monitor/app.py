@@ -43,6 +43,8 @@ class SearchWorker(QThread):
 
 
 class Window(QMainWindow):
+    scan_completed=Signal(bool)
+
     def __init__(self, device_names=None, cloud_settings=None, connection_options=None):
         super().__init__()
         from .device_names import DeviceNames
@@ -63,6 +65,9 @@ class Window(QMainWindow):
         self.batch_panel = None
         self.session_credentials = {}
         self.presentation = False
+        # None：不是傻瓜模式；True / False：云端要求全屏 / 窗口
+        self.managed_fullscreen=None
+        self.authorized_quit=False
         self.screen_lock=ScreenLock(self.device_names.settings)
         self.unlock_prompt_active=False
         self.authorized_exit=False
@@ -276,6 +281,7 @@ class Window(QMainWindow):
         self.wall.set_presentation(enabled)
 
     def toggle_fullscreen(self):
+        if self.managed_fullscreen is not None:return
         if self.presentation:self.exit_fullscreen();return
         self.was_maximized=self.isMaximized()
         self.set_presentation(True);self.showFullScreen()
@@ -322,6 +328,7 @@ class Window(QMainWindow):
         finally:dialog.deleteLater()
 
     def exit_fullscreen(self):
+        if self.managed_fullscreen is not None:return False
         if not self.presentation:return True
         if self.unlock_prompt_active:return False
         self.unlock_prompt_active=True
@@ -335,7 +342,25 @@ class Window(QMainWindow):
         finally:self.authorized_exit=False
         return True
 
+    def set_managed_fullscreen(self,enabled):
+        """傻瓜模式下全屏与否由云端决定：不弹密码，侧边栏始终收起。"""
+        self.managed_fullscreen=bool(enabled)
+        if not self.presentation:self.set_presentation(True)
+        self.authorized_exit=True
+        try:
+            self.showFullScreen() if enabled else self.showMaximized()
+        finally:self.authorized_exit=False
+
+    def leave_managed_window(self):
+        self.managed_fullscreen=None
+        self.authorized_exit=True
+        try:
+            self.set_presentation(False)
+            self.showMaximized()
+        finally:self.authorized_exit=False
+
     def native_exit_requested(self):
+        if self.managed_fullscreen is not None:return
         if not self.presentation or self.authorized_exit:return
         self.showFullScreen()
         self.exit_fullscreen()
@@ -343,6 +368,11 @@ class Window(QMainWindow):
     def changeEvent(self,event):
         super().changeEvent(event)
         if event.type()==QEvent.Type.WindowStateChange and hasattr(self,'wall') and self.wall:
+            if self.managed_fullscreen is not None:
+                # 傻瓜模式：云端说全屏就一直全屏，被系统退出了就拉回来，不弹密码
+                if self.managed_fullscreen and not self.isFullScreen() and not self.authorized_exit:
+                    QTimer.singleShot(0,self.showFullScreen)
+                return
             if self.isFullScreen() and not self.presentation:self.set_presentation(True)
             elif not self.isFullScreen() and self.presentation and not self.authorized_exit:
                 # Restore presentation before prompting so Cancel cannot expose settings.
@@ -435,8 +465,12 @@ class Window(QMainWindow):
 
     def start_scan(self, checked=False, *, target_ip=None):
         if self.presentation:return
+        self.run_scan(target_ip)
+
+    def run_scan(self, target_ip=None):
+        """真正去搜。不看界面状态，云端远程搜索也走这里。返回是否真的开始了。"""
         if self.worker and self.worker.isRunning():
-            return
+            return False
         net = self.network.currentData()
         networks = [net] if net else self.networks
         self.target_ip = target_ip
@@ -469,6 +503,7 @@ class Window(QMainWindow):
         self.worker.message.connect(self.log.appendPlainText)
         self.worker.finished.connect(self.finish_scan)
         self.worker.start()
+        return True
 
     def refresh_device_name(self, ip, name):
         if self.wall is None:return
@@ -594,6 +629,7 @@ class Window(QMainWindow):
             self.status.setText(f'搜索完成 · 发现 {len(self.devices)} 台设备，请选中设备查看 IP 和详情。')
         else:
             self.status.setText('搜索完成 · 未收到设备回复。这不代表没有摄像头，请检查下方提示后重新搜索。')
+        self.scan_completed.emit(bool(cancelled))
 
 
     # ---------- 云端同步 ----------
@@ -715,7 +751,9 @@ class Window(QMainWindow):
         player.transport.blockSignals(False)
 
     def closeEvent(self, event):
-        if self.presentation and not self.exit_fullscreen():
+        if self.managed_fullscreen is not None and not self.authorized_quit:
+            event.ignore();return
+        if self.presentation and self.managed_fullscreen is None and not self.exit_fullscreen():
             event.ignore();return
         self.closing=True
         if self.worker and self.worker.isRunning():self.worker.cancel.set()
