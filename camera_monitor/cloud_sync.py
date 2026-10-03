@@ -54,6 +54,9 @@ class CloudSync(QObject):
     mode_changed = Signal(str)
     # 带着 failure_code。托管电脑没有侧边栏可以重新登录，界面据此彻底解绑回欢迎页
     revoked = Signal(str)
+    # 安全存储一时读不出会话（刚开机钥匙串服务还没起来之类）。和 session_changed(False)
+    # 分开：后者意味着登录真的没了，托管电脑会据此解绑回欢迎页；这里只是暂时连不上
+    storage_unavailable = Signal(str)
 
     def __init__(self, names, options, store, collector, parent=None,
                  client=None, settings=None, session_store=None):
@@ -161,8 +164,12 @@ class CloudSync(QObject):
         try:
             session = self.session.load_session()
         except CredentialError as exc:
-            # 安全存储可能只是暂时不可用，别把人的设置清掉，但按钮要如实显示未连接
-            self.session_changed.emit(False)
+            # 安全存储可能只是暂时不可用：设置、模式、缓存都不动，照样先把缓存铺上，
+            # 画面不能空着。没有令牌就不联网，界面据 storage_unavailable 显示未连接
+            cached = self.cached_snapshot()
+            if cached:
+                self._apply(cached, announce=False)
+            self.storage_unavailable.emit(str(exc))
             self.status.emit(str(exc))
             return
 

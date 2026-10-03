@@ -228,6 +228,7 @@ class Window(QMainWindow):
         self.cloud.login_result.connect(self.cloud_login_result)
         self.cloud.mode_changed.connect(self.on_cloud_mode)
         self.cloud.revoked.connect(self.on_cloud_revoked)
+        self.cloud.storage_unavailable.connect(self.cloud_storage_unavailable)
         self.channel=CloudChannel(channel_url(getattr(self.cloud.client,'base_url',DEFAULT_BASE_URL)),
             self.channel_hello,parent=self)
         self.channel.message.connect(self.on_channel_message)
@@ -780,6 +781,11 @@ class Window(QMainWindow):
             # 傻瓜模式没有侧边栏可以重新登录，只能回到欢迎页
             self.managed.leave()
             self.show_welcome('云端登录已失效，请重新输入设备码。')
+
+    def cloud_storage_unavailable(self,message):
+        # 只是钥匙串一时读不出来，不是登录失效：按钮如实显示未连接，但不退出托管、
+        # 不删开机自启、不盖欢迎页。托管画面照缓存继续放，通道没开，断线提示自会出来
+        self.cloud_panel.set_connected(False,self.cloud.profile_name())
 
     def cloud_login_result(self,ok,message):
         self.manual_login=False

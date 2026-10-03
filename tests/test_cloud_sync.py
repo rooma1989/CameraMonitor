@@ -259,13 +259,20 @@ class CloudSyncTest(unittest.TestCase):
         fresh = CloudSync(self.names, self.options, self.store, collector=lambda: self.collected,
                           client=self.client, settings=self.settings, session_store=Broken())
         self.addCleanup(fresh.stop)
-        states = []
+        states, unavailable, applied = [], [], []
         fresh.session_changed.connect(states.append)
+        fresh.storage_unavailable.connect(unavailable.append)
+        fresh.applied.connect(applied.append)
 
         fresh.start()
 
-        self.assertEqual([False], states)
+        # 不发 session_changed(False)：那会被界面当成「登录失效」，托管电脑就此解绑回欢迎页。
+        # 改发专门的信号，界面据此把按钮显示成未连接，托管电脑则保持锁定
+        self.assertEqual([], states)
+        self.assertEqual(['无法读取云端登录信息，请重新输入授权码。'], unavailable)
         self.assertTrue(fresh.enabled(), '安全存储可能只是暂时不可用，不该清掉设置')
+        self.assertEqual('', fresh.token)
+        self.assertTrue(applied, '离线优先：读不到会话也要先把本机缓存铺上，画面不能空着')
 
     def test_a_network_failure_keeps_the_session(self):
         self.sync.login('code12345')

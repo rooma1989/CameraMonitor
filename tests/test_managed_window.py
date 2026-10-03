@@ -149,6 +149,50 @@ class ManagedWindowTests(unittest.TestCase):
 
     # ---------- 通道启停 ----------
 
+    def broken_vault(self):
+        from camera_monitor.credentials import CredentialError
+
+        def refuse():
+            raise CredentialError('无法读取云端登录信息，请重新输入授权码。')
+        self.window.cloud.session.load_session = refuse
+
+    def test_a_managed_computer_whose_vault_is_briefly_unreadable_stays_locked(self):
+        # 钥匙串一时读不出来（刚开机、系统服务还没起来）不等于登录失效：
+        # 托管电脑不能因此删掉开机自启、退回欢迎页，画面照缓存继续放
+        settings = self.window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        self.window.cloud._remember(managed())
+        settings.setValue('cloud/mode', 'managed')
+        disabled = []
+        self.window.managed.autostart.disable = lambda: disabled.append(1)
+        self.broken_vault()
+
+        self.window.start_cloud()
+        QApplication.processEvents()
+
+        self.assertTrue(self.window.managed.active)
+        self.assertTrue(self.window.managed_fullscreen, '缓存里的全屏设置要照样落下去')
+        self.assertTrue(self.window.welcome.isHidden())
+        self.assertEqual([], disabled)
+        self.assertTrue(self.window.cloud.enabled())
+        self.assertEqual('managed', self.window.cloud.mode())
+        self.assertEqual([], self.channel_starts)
+
+    def test_a_full_mode_computer_whose_vault_is_unreadable_shows_disconnected(self):
+        settings = self.window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        self.window.cloud._remember(snapshot())
+        self.window.cloud_panel.set_connected(True, '一楼大厅')
+        self.broken_vault()
+
+        self.window.start_cloud()
+        QApplication.processEvents()
+
+        self.assertFalse(self.window.cloud_panel.connected, '按钮要如实显示未连接')
+        self.assertIn('无法读取', self.window.cloud_panel.status.text())
+        self.assertTrue(self.window.welcome.isHidden())
+        self.assertTrue(self.window.cloud.enabled())
+
     def test_a_new_session_starts_the_channel_and_losing_it_stops_it(self):
         stops = []
         self.window.channel.stop = lambda: stops.append(1)
