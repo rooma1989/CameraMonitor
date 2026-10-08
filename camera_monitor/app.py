@@ -276,6 +276,11 @@ class Window(QMainWindow):
         self.cloud_start_timer.setSingleShot(True)
         self.cloud_start_timer.timeout.connect(self.start_cloud)
         self.cloud_start_timer.start(0)
+        # 「启动后自动全屏」等启动时铺完墙再判断，只判断一次。同样用窗口自己的定时器
+        self.auto_fullscreen_pending=True
+        self.auto_fullscreen_timer=QTimer(self)
+        self.auto_fullscreen_timer.setSingleShot(True)
+        self.auto_fullscreen_timer.timeout.connect(self.auto_fullscreen)
 
     def set_welcome_visible(self,visible):
         # 欢迎页只是盖在上面的一层，键盘却会穿过去：Tab 走进看不见的侧边栏，F11 把
@@ -752,6 +757,20 @@ class Window(QMainWindow):
         if self.cloud.token:self.channel.start()
         # 完整模式按勾选对齐一次：现场手动删了启动项，下次打开软件就补回来（和傻瓜模式一样）
         if not self.managed.active:self.sync_autostart()
+        self.auto_fullscreen_timer.start(0)
+
+    def auto_fullscreen(self):
+        """完整模式勾了「启动后自动全屏」：打开时铺好了墙就进全屏，和按 F11 一样。"""
+        # 只在启动时判断一次。云端配置晚到不再触发，退出全屏后也不会被拉回去
+        if not self.auto_fullscreen_pending:return
+        self.auto_fullscreen_pending=False
+        if not flag(self.device_names.settings.value(START_FULLSCREEN_KEY,False)):return
+        # 傻瓜模式全屏由远程页决定；欢迎页盖着说明还没选用法；墙是空的就别给一块黑屏
+        if self.managed.active or self.presentation or not self.welcome.isHidden():return
+        if self.wall is None or not self.wall.tiles:return
+        self.toggle_fullscreen()
+        # 启动时窗口还是默认大小，退出全屏后回到最大化，监控墙铺满屏幕
+        self.was_maximized=True
 
     def show_welcome(self,message=''):
         self.welcome.set_busy(False)

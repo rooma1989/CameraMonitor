@@ -7,8 +7,9 @@ from unittest.mock import patch
 from PySide6.QtWidgets import QApplication
 
 from camera_monitor.device_names import DeviceNames
+from camera_monitor.discovery import Device
 from support import FakeAutoStart, isolated_settings, make_window
-from test_cloud_sync import snapshot
+from test_cloud_sync import camera, snapshot
 from test_credentials import MemoryVault
 
 
@@ -186,6 +187,122 @@ class StartupSwitchTests(unittest.TestCase):
         self.assertEqual(['enable'], self.autostart.calls, '傻瓜模式开机启动一直开着')
         self.assertFalse(self.setting(window, 'autostart'))
         self.assertTrue(self.setting(window, 'start_fullscreen'))
+
+
+
+class AutoFullscreenTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        vault = MemoryVault()
+        patcher = patch('camera_monitor.credentials.CredentialStore.vault', lambda _self: vault)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def window(self, start_fullscreen=True, cameras=0):
+        names = DeviceNames(isolated_settings(self)('names.ini'))
+        names.settings.setValue('monitor/start_fullscreen', start_fullscreen)
+        window = make_window(self, device_names=names)
+        window.thumbnails.request = lambda *args, **kwargs: None
+        window.cloud_start_timer.stop()
+        window.channel.start = lambda: None
+        window.cloud.refresh = lambda: None
+        for index in range(cameras):
+            window.wall.add_device(Device(f'10.0.0.{index + 1}'))
+        window.show()
+        QApplication.processEvents()
+        return window
+
+    def launch(self, window):
+        # 和真正启动一样：启动定时器跑 start_cloud，之后才轮到自动全屏的那一拍
+        window.start_cloud()
+        for _ in range(3):
+            QApplication.processEvents()
+
+    def test_opens_in_fullscreen_when_switched_on(self):
+        window = self.window(cameras=1)
+
+        self.launch(window)
+
+        self.assertTrue(window.presentation)
+        self.assertTrue(window.isFullScreen())
+        self.assertTrue(window.was_maximized, '退出全屏后回到最大化，而不是启动时那个窗口大小')
+
+    def test_stays_windowed_when_switched_off(self):
+        window = self.window(start_fullscreen=False, cameras=1)
+
+        self.launch(window)
+
+        self.assertFalse(window.presentation)
+
+    def test_an_empty_wall_does_not_go_fullscreen(self):
+        window = self.window(cameras=0)
+
+        self.launch(window)
+
+        self.assertFalse(window.presentation, '一打开就是一块黑屏，还得输密码才能出来')
+
+    def test_not_while_the_welcome_page_is_up(self):
+        window = self.window(cameras=1)
+        window.set_welcome_visible(True)
+
+        self.launch(window)
+
+        self.assertFalse(window.presentation)
+
+    def cloud_cache(self, window, mode='full', fullscreen=False):
+        settings = window.cloud.settings
+        settings.setValue('cloud/enabled', True)
+        settings.setValue('cloud/mode', mode)
+        snap = dict(snapshot(cameras=[camera()]), mode=mode)
+        snap['layout'] = dict(snap['layout'], start_fullscreen=True, fullscreen=fullscreen)
+        window.cloud._remember(snap)
+        window.cloud.session.load_session = lambda: {'token': 'cm1.t'}
+
+    def test_waits_for_the_cached_cloud_wall(self):
+        window = self.window(cameras=0)
+        self.cloud_cache(window)
+
+        self.launch(window)
+
+        self.assertEqual(1, len(window.wall.tiles))
+        self.assertTrue(window.presentation, '缓存铺好之后墙上就有摄像头了')
+
+    def test_managed_mode_follows_the_cloud_instead(self):
+        window = self.window(cameras=0)
+        self.cloud_cache(window, mode='managed', fullscreen=False)
+
+        self.launch(window)
+
+        self.assertTrue(window.managed.active)
+        self.assertFalse(window.managed_fullscreen)
+        self.assertFalse(window.isFullScreen(), '傻瓜模式全屏与否由远程页决定')
+
+    def test_a_late_cloud_config_does_not_trigger_it(self):
+        window = self.window(cameras=0)
+        self.launch(window)
+
+        window.cloud._apply(dict(snapshot(cameras=[camera()]), mode='full'))
+        for _ in range(3):
+            QApplication.processEvents()
+
+        self.assertEqual(1, len(window.wall.tiles))
+        self.assertFalse(window.presentation)
+
+    def test_fires_only_once(self):
+        window = self.window(cameras=1)
+        self.launch(window)
+        with patch('camera_monitor.app.request_unlock', return_value=True):
+            self.assertTrue(window.exit_fullscreen())
+        for _ in range(3):
+            QApplication.processEvents()
+
+        window.auto_fullscreen()
+        QApplication.processEvents()
+
+        self.assertFalse(window.presentation, '退出全屏后不会被拉回去')
 
 
 if __name__ == '__main__':
