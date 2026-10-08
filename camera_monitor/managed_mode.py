@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel, QLine
                                QPushButton, QVBoxLayout)
 
 from . import __version__
+from .autostart import reconcile as reconcile_autostart
 from .cloud_state import DEFAULT_CREDENTIAL_ACCOUNT
 from .credentials import CredentialError
 from .discovery import validate_target_ip
@@ -201,7 +202,10 @@ class ManagedController(QObject):
         self.waiting.hide()
         self.offline.hide()
         self.offline.setText(OFFLINE_TEXT)
-        self.autostart.disable()
+        # 不再一律删掉：按完整模式「开机自动启动」的勾选对齐，从没勾过的电脑照旧删掉。
+        # 工具栏随后重新露出来，勾选框要显示对齐之后的实际状态
+        reconcile_autostart(self.autostart, self.window.device_names.settings)
+        self.window.refresh_startup_toggles()
         self.window.wall.set_locked(False)
         self.window.leave_managed_window()
 

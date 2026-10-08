@@ -130,7 +130,16 @@ class ManagedControllerTests(unittest.TestCase):
         self.assertFalse(self.window.wall.locked)
         self.assertFalse(self.window.presentation)
         self.assertIsNone(self.window.managed_fullscreen)
-        self.assertFalse(self.autostart.enabled)
+        self.assertFalse(self.autostart.enabled, '完整模式没勾过开机启动，离开时照旧删掉')
+
+    def test_leaving_keeps_autostart_when_full_mode_wants_it(self):
+        self.window.device_names.settings.setValue('monitor/autostart', True)
+        self.managed.enter()
+        QApplication.processEvents()
+
+        self.managed.leave()
+
+        self.assertTrue(self.autostart.enabled, '按完整模式的勾选对齐，不再一律删掉')
 
     def test_nothing_is_uploaded_or_reported_after_leaving(self):
         self.managed.enter()

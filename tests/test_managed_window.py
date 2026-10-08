@@ -58,6 +58,20 @@ class ManagedWindowTests(unittest.TestCase):
         self.assertFalse(self.window.presentation)
         self.assertFalse(self.window.wall.locked)
 
+    def test_back_to_full_mode_follows_the_autostart_switch(self):
+        autostart = self.window.autostart
+        self.window.device_names.settings.setValue('monitor/autostart', True)
+        self.window.cloud._apply(managed())
+        QApplication.processEvents()
+        autostart.calls.clear()
+
+        # 旧后台：下发里没有 autostart，只能看本机勾选
+        self.window.cloud._apply(snapshot())
+
+        self.assertEqual(['enable'], autostart.calls)
+        self.assertTrue(autostart.enabled)
+        self.assertTrue(self.window.autostart_toggle.isChecked(), '工具栏重新露出来时勾选框要对')
+
     def test_config_changed_fetches_only_newer_versions(self):
         fetches = []
         self.window.cloud.refresh = lambda: fetches.append(1)
