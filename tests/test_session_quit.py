@@ -54,6 +54,48 @@ class SessionQuitTests(unittest.TestCase):
         self.assertTrue(event.isAccepted())
 
 
+class FullModeSessionQuitTests(unittest.TestCase):
+    """完整模式勾了「启动后自动全屏」：墙一直全屏，关机、注销不能卡在大屏密码框上。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        vault = MemoryVault()
+        patcher = patch('camera_monitor.credentials.CredentialStore.vault', lambda _self: vault)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.window = make_window(self)
+        # 窗口关掉之后启动定时器才在清理时跑起来，会去碰已经删掉的控件
+        self.window.cloud_start_timer.stop()
+        self.window.toggle_fullscreen()
+        self.assertTrue(self.window.presentation)
+        self.prompts = []
+        patcher = patch.object(app_module, 'request_unlock',
+                               lambda *args: self.prompts.append(1) or False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_normal_close_still_asks_for_the_screen_password(self):
+        event = QCloseEvent()
+        self.window.closeEvent(event)
+
+        self.assertEqual([1], self.prompts)
+        self.assertFalse(event.isAccepted())
+
+    def test_shutting_down_closes_without_the_password_prompt(self):
+        fake = FakeApp()
+        app_module.allow_session_quit(fake, self.window)
+
+        fake.commitDataRequest.emit(None)
+        event = QCloseEvent()
+        self.window.closeEvent(event)
+
+        self.assertEqual([], self.prompts, '没人在屏幕前输密码，关机会一直卡着')
+        self.assertTrue(event.isAccepted())
+
+
 class MainWiringTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

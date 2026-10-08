@@ -1035,7 +1035,10 @@ class Window(QMainWindow):
     def closeEvent(self, event):
         if self.managed_fullscreen is not None and not self.authorized_quit:
             event.ignore();return
-        if self.presentation and self.managed_fullscreen is None and not self.exit_fullscreen():
+        # 关机、注销（allow_session_quit 放行过）时不弹大屏密码：勾了「启动后自动全屏」的
+        # 电脑一直全屏，屏幕前没人输密码，关机就一直卡着。人手关窗口照旧要密码
+        if self.presentation and self.managed_fullscreen is None and not self.authorized_quit \
+                and not self.exit_fullscreen():
             event.ignore();return
         self.closing=True
         # 改完不到一秒就关了软件：排着的本机快照当场写掉，否则重启后少了刚才那一步

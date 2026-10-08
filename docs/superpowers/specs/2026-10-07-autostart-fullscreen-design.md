@@ -128,5 +128,6 @@
   - 「没登录云端」在 `cloud.start()` 之前判断。设置说登录了、钥匙串里却没有会话时，`cloud.start()` 会把登录改成 false；这种电脑的本机快照是登录之前存的，已经过时，不回放。
   - 欢迎页上选「单机使用」时也回放：从欢迎页登录过的电脑（`cloud/standalone=false`）在侧边栏退出云端后重启，会先看到欢迎页，启动时不回放；选了单机后墙是空的就回放本机快照，墙上已有画面（同一次运行里刚解绑回来）就不动。这里不做自动全屏判断，那只在打开软件时做。
   - 快照格式对、内容不对（手改坏了，包括 `layout` 不是对象），解析和回放时出的任何异常都只记日志，墙空着，软件照常用；启动项对齐和自动全屏的定时器照样往下走。
+- **关机、注销时不弹大屏密码**：勾了「启动后自动全屏」的电脑一直全屏，Windows 关机或注销时系统要关掉所有窗口，`closeEvent` 以前会弹大屏密码框，屏幕前没人输，关机就卡住。现在和傻瓜模式一样认 `authorized_quit`（`allow_session_quit` 在 `commitDataRequest` 里设上）：放行时直接关，不弹密码。人手关窗口（Alt+F4、点关闭）照旧要密码。macOS 上 ⌘Q、程序坞「退出」也走 `commitDataRequest`，分不清是不是注销，同样不弹密码就退出；现场电脑都是 Windows，macOS 只是开发机，见[傻瓜模式设计](2026-10-03-managed-mode-design.md) §12。
 - **打包冒烟测试隔离**：`packaging/launcher.py --packaging-smoke-test`（`build-windows.bat`、macOS 打包脚本在打好的程序上跑）以前直接构造真窗口，会按打包机上的设置删掉或补上开机启动项，读写真实设置。现在由 `smoke_window(folder)` 建窗口：设置全放进临时目录的 ini，启动项换成什么都不做的 `NoAutoStart`。原有的 TLS、WebSocket、JPEG、图标检查不变。
 - **测试**：`tests/support.make_window` 默认注入 `FakeAutoStart`。直接构造 `Window` 的几个旧用例也改成传假的 AutoStart，因为窗口一打开就会用 `is_enabled()` 去读本机的启动项。
