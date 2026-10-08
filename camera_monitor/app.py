@@ -797,11 +797,14 @@ class Window(QMainWindow):
             if not isinstance(snapshot,dict):raise ValueError('不是 JSON 对象')
         except ValueError as exc:
             logger.warning('本机快照读不出来，已忽略：%s',exc);return
-        # 两个开关以本机设置为准：快照最多晚一秒，刚改完勾选就关软件的话，回放会把它改回去
-        layout={k:v for k,v in dict(snapshot.get('layout') or {}).items() if k not in ('autostart','start_fullscreen')}
-        snapshot=dict(snapshot,layout=layout,mode='full')
         self.replaying_local=True
         try:
+            # 解析也放在这里面：layout 被手改成了字符串、数组之类，同样只记日志，启动照常往下走
+            layout=snapshot.get('layout') or {}
+            if not isinstance(layout,dict):raise ValueError('layout 不是 JSON 对象')
+            # 两个开关以本机设置为准：快照最多晚一秒，刚改完勾选就关软件的话，回放会把它改回去
+            layout={k:v for k,v in layout.items() if k not in ('autostart','start_fullscreen')}
+            snapshot=dict(snapshot,layout=layout,mode='full')
             # 快照里没有 password 键，apply_snapshot 不会碰钥匙串，已存的账号密码照样能用
             self.apply_cloud_config(apply_snapshot(snapshot,self.device_names,self.connection_options,
                 self.wall.credential_store))

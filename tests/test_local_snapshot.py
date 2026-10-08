@@ -222,6 +222,21 @@ class LocalSnapshotTests(unittest.TestCase):
 
         self.assertEqual([], window.wall.tiles)
 
+    def test_a_snapshot_with_a_malformed_layout_is_ignored_and_startup_goes_on(self):
+        for layout in ('"oops"', '[1, 2]', '[["capacity"]]', '7'):
+            with self.subTest(layout=layout):
+                names = DeviceNames(self.ini(f'names-{len(layout)}-{layout[:2]}.ini'))
+                names.settings.setValue(KEY, '{"layout": %s, "cameras": []}' % layout)
+                names.settings.setValue('monitor/autostart', True)
+                window = self.window(device_names=names)
+
+                with self.assertLogs('camera_monitor.app', level=logging.WARNING):
+                    window.start_cloud()
+
+                self.assertEqual([], window.wall.tiles)
+                self.assertEqual(['enable'], window.autostart.calls, '启动项照样对齐')
+                self.assertTrue(window.auto_fullscreen_timer.isActive(), '自动全屏照样排上')
+
     def test_a_restored_wall_still_goes_fullscreen_when_asked(self):
         first = self.window()
         self.build_wall(first)
