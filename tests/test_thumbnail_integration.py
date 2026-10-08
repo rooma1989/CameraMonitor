@@ -9,7 +9,7 @@ from PySide6.QtCore import QObject, Signal, QSettings
 from PySide6.QtGui import QImage, QCloseEvent
 from PySide6.QtWidgets import QApplication
 from camera_monitor.app import Window
-from support import FakeAutoStart
+from support import FakeAutoStart, no_topmost
 from camera_monitor.device_names import DeviceNames
 from camera_monitor.discovery import Device
 
@@ -35,7 +35,7 @@ class ThumbnailIntegrationTests(unittest.TestCase):
         cloud=QSettings(os.path.join(self.folder.name,'cloud.ini'),QSettings.Format.IniFormat)
         cloud.setValue('cloud/standalone',True)  # 老用户，不盖欢迎页
         with patch('camera_monitor.app.interfaces',return_value=[]):
-            self.window=Window(device_names=DeviceNames(self.settings),cloud_settings=cloud,autostart=FakeAutoStart())
+            self.window=Window(device_names=DeviceNames(self.settings),cloud_settings=cloud,autostart=FakeAutoStart(),topmost=no_topmost)
         self.window.thumbnail_timer.stop()
 
     def tearDown(self):

@@ -55,6 +55,10 @@ class FakeAutoStart:
         return self.enabled
 
 
+def no_topmost(hwnd, on):
+    """窗口用的假置顶：Windows 测试机上也不能拿 offscreen 的假句柄去调 SetWindowPos。"""
+
+
 def make_window(case, fresh_install=False, **kwargs):
     """Build a Window whose settings are isolated and whose timers stop on cleanup.
 
@@ -74,6 +78,7 @@ def make_window(case, fresh_install=False, **kwargs):
     kwargs.setdefault('connection_options', ConnectionOptions(ini('conn.ini')))
     # 真的 AutoStart 源码运行时虽然不写，is_enabled() 仍会去读本机的启动项
     kwargs.setdefault('autostart', FakeAutoStart())
+    kwargs.setdefault('topmost', no_topmost)
 
     window = Window(**kwargs)
     assert not window.cloud.enabled(), '测试不得继承这台机器上真实的云端登录态'

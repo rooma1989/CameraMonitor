@@ -8,7 +8,8 @@ import os
 import platform
 import sys
 import threading
-from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent, QSettings, QStandardPaths
+import time
+from PySide6.QtCore import QCoreApplication, QThread, Signal, Qt, QTimer, QEvent, QSettings, QStandardPaths
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -33,6 +34,7 @@ from .cloud import DEFAULT_BASE_URL
 from .cloud_channel import CloudChannel, channel_url
 from .managed_mode import ManagedController
 from .snapshots import SnapshotUploader
+from . import win_topmost
 
 logger=logging.getLogger(__name__)
 LOG_FILE='camera_monitor.log'
@@ -43,6 +45,14 @@ START_FULLSCREEN_KEY='monitor/start_fullscreen'
 # 不登录云端的电脑存的本机快照，格式同云端配置（剥掉密码）。local/ 不算启动分流里的「用过」
 LOCAL_SNAPSHOT_KEY='local/snapshot'
 LOCAL_SNAPSHOT_DELAY_MS=1000
+# 开机自启时晚几秒再自动全屏：登录那一阵桌面、任务栏还在起，工作区和 DPI 也在变，
+# 太早进的全屏会被系统挤成带标题栏的最大化，任务栏露在下面。人手打开照旧马上进
+BOOT_FULLSCREEN_DELAY_MS=5000
+# 自动全屏之后这么多秒内，掉出全屏算系统干的：悄悄拉回去，不弹大屏密码（屏幕前多半没人）。
+# 过了这段时间照旧弹密码，免得有人借窗口操作绕开大屏密码
+FULLSCREEN_GUARD_SECONDS=60
+# 系统挤窗口不一定都报得出状态变化，自动全屏后再隔几拍主动看一眼
+FULLSCREEN_CHECKS_MS=(1000,3000,10000)
 
 # 后台永久拒绝时给现场看的话：服务端原话面向管理员，这里说清楚该找谁、该做什么
 REVOKED_MESSAGES={
@@ -69,11 +79,28 @@ class SearchWorker(QThread):
             self.message.emit(f'搜索发生错误：{exc}')
 
 
+def launched_at_boot(argv=None):
+    """是不是开机自启拉起来的：启动项命令行里带着 --autostart。"""
+    return AUTOSTART_FLAG in (argv if argv is not None else QCoreApplication.arguments())
+
+def state_name(state):
+    names=[name for flag,name in ((Qt.WindowState.WindowMinimized,'minimized'),(Qt.WindowState.WindowMaximized,'maximized'),
+        (Qt.WindowState.WindowFullScreen,'fullscreen')) if state&flag]
+    return '+'.join(names) or 'normal'
+
+
 class Window(QMainWindow):
     scan_completed=Signal(bool)
 
-    def __init__(self, device_names=None, cloud_settings=None, connection_options=None, autostart=None):
+    def __init__(self, device_names=None, cloud_settings=None, connection_options=None, autostart=None,
+                 boot_launch=None, clock=None, topmost=None):
         super().__init__()
+        self.boot_launch=launched_at_boot() if boot_launch is None else bool(boot_launch)
+        # 时钟、置顶开关可注入：测试不用真等一分钟，也不碰 win32
+        self.clock=clock or time.monotonic
+        self.topmost=topmost or win_topmost.set_topmost
+        # 自动全屏后的保护期截止时刻（clock 的读数）；None 表示不在保护期
+        self.fullscreen_guard_until=None
         from .device_names import DeviceNames
         self.device_names = device_names if device_names is not None else DeviceNames()
         self.device_names.changed.connect(self.refresh_device_name)
@@ -355,7 +382,31 @@ class Window(QMainWindow):
         self.was_maximized=self.isMaximized()
         # 用户亲手按的全屏不是动画收尾，别被落定逻辑拉回最大化
         self.stop_settling()
-        self.set_presentation(True);self.showFullScreen()
+        self.set_presentation(True);self.showFullScreen();self.set_topmost(True)
+
+    def set_topmost(self,on):
+        # 演示全屏时放进置顶层压住任务栏，退出时放回普通层；只在 Windows 上真改（见 win_topmost）
+        self.topmost(int(self.winId()),on)
+
+    def bring_to_front(self):
+        # 开机自启时窗口常常不在前台，不在前台的全屏窗口压不住任务栏
+        self.raise_();self.activateWindow();self.set_topmost(True)
+
+    def in_fullscreen_guard(self):
+        return self.fullscreen_guard_until is not None and self.clock()<self.fullscreen_guard_until
+
+    def reassert_fullscreen(self):
+        """自动全屏后的保护期里掉出了全屏：悄悄拉回去，不弹密码。"""
+        # 输密码退出（presentation 已是 False）、傻瓜模式、退出傻瓜模式的落定都不归这里管
+        if self.managed_fullscreen is not None or not self.presentation or self.settling_state:return
+        if self.isFullScreen():return
+        self.showFullScreen();self.bring_to_front()
+
+    def check_fullscreen(self):
+        # 系统挤窗口不一定都报状态变化，自动全屏后隔几拍主动看一眼
+        if not self.in_fullscreen_guard() or self.managed_fullscreen is not None:return
+        if self.presentation and not self.isFullScreen():
+            logger.info('自动全屏后检查：演示布局却不是全屏，重新全屏');self.reassert_fullscreen()
 
     def live_thumbnail(self,ip):
         if self.wall:
@@ -432,9 +483,9 @@ class Window(QMainWindow):
         try:allowed=request_unlock(self,self.screen_lock)
         finally:self.unlock_prompt_active=False
         if not allowed:return False
-        self.authorized_exit=True
+        self.authorized_exit=True;self.fullscreen_guard_until=None
         try:
-            self.set_presentation(False)
+            self.set_presentation(False);self.set_topmost(False)
             self.showMaximized() if getattr(self,'was_maximized',False) else self.showNormal()
         finally:self.authorized_exit=False
         return True
@@ -442,11 +493,14 @@ class Window(QMainWindow):
     def set_managed_fullscreen(self,enabled):
         """傻瓜模式下全屏与否由云端决定：不弹密码，侧边栏始终收起。"""
         self.managed_fullscreen=bool(enabled)
-        self.stop_settling()
+        # 傻瓜模式的全屏由云端管，完整模式自动全屏的保护期到此为止
+        self.stop_settling();self.fullscreen_guard_until=None
         if not self.presentation:self.set_presentation(True)
         self.authorized_exit=True
         try:
             self.showFullScreen() if enabled else self.showMaximized()
+            # 云端要窗口时不能还压着别的程序
+            self.set_topmost(self.managed_fullscreen)
         finally:self.authorized_exit=False
 
     def leave_managed_window(self):
@@ -454,7 +508,7 @@ class Window(QMainWindow):
         self.settling_state='maximized';self.settle_timer.start()
         self.authorized_exit=True
         try:
-            self.set_presentation(False)
+            self.set_presentation(False);self.set_topmost(False)
             self.showMaximized()
         finally:self.authorized_exit=False
 
@@ -464,12 +518,16 @@ class Window(QMainWindow):
     def native_exit_requested(self):
         if self.managed_fullscreen is not None:return
         if not self.presentation or self.authorized_exit:return
-        self.showFullScreen()
+        self.showFullScreen();self.set_topmost(True)
         self.exit_fullscreen()
 
     def changeEvent(self,event):
         super().changeEvent(event)
         if event.type()==QEvent.Type.WindowStateChange and hasattr(self,'wall') and self.wall:
+            # 现场日志靠这一行还原窗口是怎么掉出全屏的：谁改的、当时界面是不是演示布局
+            logger.info('窗口状态 %s → %s（presentation=%s managed_fullscreen=%s authorized_exit=%s）',
+                state_name(event.oldState()),state_name(self.windowState()),self.presentation,
+                self.managed_fullscreen,self.authorized_exit)
             if self.managed_fullscreen is not None:
                 # 傻瓜模式：云端说全屏就一直全屏，被系统退出了就拉回来，不弹密码
                 if self.managed_fullscreen and not self.isFullScreen() and not self.authorized_exit:
@@ -480,10 +538,16 @@ class Window(QMainWindow):
                 if self.isFullScreen():QTimer.singleShot(0,self,self.showMaximized)
                 elif self.isMaximized():self.stop_settling()
                 return
-            if self.isFullScreen() and not self.presentation:self.set_presentation(True)
+            if self.isFullScreen() and not self.presentation:self.set_presentation(True);self.set_topmost(True)
             elif not self.isFullScreen() and self.presentation and not self.authorized_exit:
-                # Restore presentation before prompting so Cancel cannot expose settings.
-                QTimer.singleShot(0,self.native_exit_requested)
+                if self.in_fullscreen_guard():
+                    # 自动全屏后不久掉出来是系统干的（开机时桌面、任务栏还在起），屏幕前多半没人，
+                    # 弹密码框只会让监控墙停在带标题栏的最大化。悄悄拉回去
+                    logger.info('自动全屏后 %d 秒内被系统退出全屏，重新全屏，不弹密码',FULLSCREEN_GUARD_SECONDS)
+                    QTimer.singleShot(0,self,self.reassert_fullscreen)
+                else:
+                    # Restore presentation before prompting so Cancel cannot expose settings.
+                    QTimer.singleShot(0,self.native_exit_requested)
 
     def show_batch_settings(self):
         if self.presentation or not self.welcome.isHidden():return
@@ -776,7 +840,7 @@ class Window(QMainWindow):
         if standalone and self.welcome.isHidden():self.restore_local_snapshot()
         # 完整模式按勾选对齐一次：现场手动删了启动项，下次打开软件就补回来（和傻瓜模式一样）
         if not self.managed.active:self.sync_autostart()
-        self.auto_fullscreen_timer.start(0)
+        self.auto_fullscreen_timer.start(BOOT_FULLSCREEN_DELAY_MS if self.boot_launch else 0)
 
     def save_local_snapshot(self):
         """单机电脑把现在的墙存一份到本机设置，重启后据此恢复。密码本来就在钥匙串里。"""
@@ -825,6 +889,11 @@ class Window(QMainWindow):
         self.toggle_fullscreen()
         # 启动时窗口还是默认大小，退出全屏后回到最大化，监控墙铺满屏幕
         self.was_maximized=True
+        logger.info('自动全屏%s',f'（开机自启，晚了 {BOOT_FULLSCREEN_DELAY_MS} 毫秒）' if self.boot_launch else '')
+        # 保护期内掉出全屏算系统干的，悄悄拉回去；再隔几拍主动查一次
+        self.fullscreen_guard_until=self.clock()+FULLSCREEN_GUARD_SECONDS
+        self.bring_to_front()
+        for delay in FULLSCREEN_CHECKS_MS:QTimer.singleShot(delay,self,self.check_fullscreen)
 
     def show_welcome(self,message=''):
         self.welcome.set_busy(False)
