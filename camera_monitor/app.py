@@ -1064,6 +1064,8 @@ class Window(QMainWindow):
                 self.apply_cloud_stream(tile,result.streams.get(device.ip,{}))
                 # 云端刚把这台的账号密码写进钥匙串，早就建好的那一格还拿着旧的
                 tile.player.reload_credentials()
+            # 早就在墙上的格子只认第一次摆的位置：后台拖完顺序下发，要把它们挪到新格子上
+            self.wall.arrange(self.wall.saved_slots)
             self.wall.organization_input.setText(result.organization)
             self.wall.organization_header.setText(result.organization)
             self.wall.fill_width.blockSignals(True)
