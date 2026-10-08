@@ -1,6 +1,7 @@
 """完整模式的两个开关：开机自动启动、启动后自动全屏。"""
 import os
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+import time
 import unittest
 from unittest.mock import patch
 
@@ -9,7 +10,7 @@ from PySide6.QtWidgets import QApplication
 from camera_monitor.device_names import DeviceNames
 from camera_monitor.discovery import Device
 from support import FakeAutoStart, isolated_settings, make_window
-from test_cloud_sync import camera, snapshot
+from test_cloud_sync import FakeClient, camera, snapshot
 from test_credentials import MemoryVault
 
 
@@ -188,6 +189,91 @@ class StartupSwitchTests(unittest.TestCase):
         self.assertFalse(self.setting(window, 'autostart'))
         self.assertTrue(self.setting(window, 'start_fullscreen'))
 
+
+
+class EchoClient(FakeClient):
+    """和 ConfigService::apply 一样：收下上传，版本号加一，把存下的那份原样返回。"""
+
+    def __init__(self):
+        super().__init__()
+        self.version = 1
+
+    def push(self, token, version, layout, cameras):
+        self.calls.append(('push', token, version, layout, cameras))
+        self.version += 1
+        return {'version': self.version, 'profile': {'id': 1, 'name': '一楼大厅'}, 'mode': 'full',
+                'layout': dict(layout, fullscreen=False), 'cameras': [dict(c) for c in cameras]}
+
+
+class CloudRoundTripTests(unittest.TestCase):
+    """真窗口 + 假服务端：两个开关在后台改过之后，本机再改回去要传得上去。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        vault = MemoryVault()
+        patcher = patch('camera_monitor.credentials.CredentialStore.vault', lambda _self: vault)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.window = make_window(self, autostart=FakeAutoStart())
+        self.window.thumbnails.request = lambda *args, **kwargs: None
+        self.window.cloud_start_timer.stop()
+        self.window.channel.start = lambda: None
+        self.window.wall.add_device(Device('10.0.0.5'))
+        self.client = EchoClient()
+        cloud = self.window.cloud
+        cloud.client = self.client
+        cloud.settings.setValue('cloud/enabled', True)
+        cloud.settings.setValue('cloud/version', 1)
+        cloud.token = 'cm1.token'
+
+    def settle(self):
+        cloud = self.window.cloud
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and cloud.calls:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        QApplication.processEvents()
+        cloud.push_timer.stop()
+
+    def pushes(self):
+        return [call for call in self.client.calls if call[0] == 'push']
+
+    def admin_turns_autostart_on(self):
+        # 先传一次（开机启动没勾），后台编辑页再把它打开、推一次 config_changed
+        self.window.cloud.push_now()
+        self.settle()
+        uploaded = self.pushes()[0][3]
+        self.client.version += 1
+        self.client.fetch_result = {'version': self.client.version, 'mode': 'full',
+                                    'profile': {'id': 1, 'name': '一楼大厅'},
+                                    'layout': dict(uploaded, fullscreen=False, autostart=True),
+                                    'cameras': [dict(c) for c in self.pushes()[0][4]]}
+        self.window.cloud.refresh()
+        self.settle()
+        self.assertTrue(self.window.autostart_toggle.isChecked())
+
+    def test_unticking_after_the_admin_switched_it_on_is_uploaded(self):
+        self.admin_turns_autostart_on()
+
+        self.window.autostart_toggle.setChecked(False)
+        self.window.cloud.push_now()
+        self.settle()
+
+        self.assertEqual(2, len(self.pushes()), '去掉勾要传上去，否则后台一直显示开着')
+        self.assertFalse(self.pushes()[1][3]['autostart'])
+
+    def test_the_downloaded_config_is_not_uploaded_back(self):
+        # 下发的 layout 比本机多了 fullscreen 之类的键：去重要和本机上传时的样子比，
+        # 不然每收一次下发都会多传一次
+        self.admin_turns_autostart_on()
+
+        self.window.cloud.push_now()
+        self.settle()
+
+        self.assertEqual(1, len(self.pushes()))
 
 
 class AutoFullscreenTests(unittest.TestCase):

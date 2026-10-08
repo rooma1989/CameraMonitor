@@ -33,6 +33,19 @@ def camera(ip='10.0.0.1', slot=0, password='pw'):
             'name_color': '#ffffff', 'name_corner': 'top-left'}
 
 
+def local(applied):
+    """落下来的配置在本机 collector 眼里的样子（只取去重会看的部分）。"""
+    return {'version': 0, 'layout': {'capacity': applied.capacity},
+            'cameras': [{'ip': device.ip, 'slot_index': index}
+                        for index, device in enumerate(applied.devices)]}
+
+
+def local_of(snap):
+    return {'version': 0, 'layout': {'capacity': snap['layout']['capacity']},
+            'cameras': [{'ip': c['ip'], 'slot_index': index}
+                        for index, c in enumerate(snap.get('cameras') or [])]}
+
+
 class FakeClient:
     """Stand-in for CloudClient; records calls and replays scripted outcomes."""
 
@@ -113,6 +126,10 @@ class CloudSyncTest(unittest.TestCase):
 
     def settled(self):
         return self.pump(lambda: not self.sync.busy() and not self.sync.calls)
+
+    def change_locally(self):
+        # 登录时落下了云端那份，collector 原样不动就等于「没改过」，不会传
+        self.collected = dict(self.collected, layout={'capacity': 9})
 
     # ---------- 登录 ----------
 
@@ -418,6 +435,7 @@ class CloudSyncTest(unittest.TestCase):
     def test_pushes_are_debounced_rather_than_sent_per_change(self):
         self.sync.login('code12345')
         self.assertTrue(self.settled())
+        self.change_locally()
         self.client.calls.clear()
 
         for _ in range(5):
@@ -431,6 +449,7 @@ class CloudSyncTest(unittest.TestCase):
     def test_a_version_conflict_adopts_the_configuration_the_server_returned(self):
         self.sync.login('code12345')
         self.assertTrue(self.settled())
+        self.change_locally()
         latest = snapshot(version=50, cameras=[camera(ip='10.0.0.50')])
         self.client.raises['push'] = CloudConflict('配置已在别处更新', latest)
 
@@ -441,11 +460,85 @@ class CloudSyncTest(unittest.TestCase):
         self.assertEqual(['10.0.0.50'], [d.ip for d in self.applications[-1].devices])
         self.assertTrue(any('已在别处更新' in m for m in self.statuses))
 
+    # ---------- 下发之后的去重 ----------
+
+    def follow_applied(self):
+        """和真窗口一样：云端配置落下来之后，collector 读到的就是刚落下的那份。"""
+        self.sync.applied.connect(lambda result: setattr(self, 'collected', local(result)))
+
+    def pushes(self):
+        return [call for call in self.client.calls if call[0] == 'push']
+
+    def upload(self, uploaded):
+        """登录后把 uploaded 传上去一次，服务端原样收下。"""
+        self.follow_applied()
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+        self.client.push_result = uploaded
+        self.collected = local_of(uploaded)
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+        self.assertEqual(1, len(self.pushes()))
+
+    def test_changing_back_to_the_last_upload_after_a_download_is_uploaded(self):
+        # 上次传的是 A，后台改成了 B 并下发到本机；现场又改回 A，这次必须传上去，
+        # 否则后台一直以为是 B
+        uploaded = snapshot(version=2, cameras=[camera(ip='10.0.0.1')])
+        self.upload(uploaded)
+        self.client.fetch_result = snapshot(version=3, cameras=[camera(ip='10.0.0.2')])
+        self.sync.refresh()
+        self.assertTrue(self.settled())
+
+        self.collected = local_of(uploaded)
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(2, len(self.pushes()), '改回上次传过的内容也是一次真改动')
+
+    def test_a_download_with_nothing_changed_locally_is_not_sent_back(self):
+        self.upload(snapshot(version=2, cameras=[camera(ip='10.0.0.1')]))
+        self.client.fetch_result = snapshot(version=3, cameras=[camera(ip='10.0.0.2')])
+        self.sync.refresh()
+        self.assertTrue(self.settled())
+
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(1, len(self.pushes()), '本机这份就是云端刚下发的，传回去只会白白加版本号')
+
+    def test_a_relogin_download_also_resets_what_counts_as_a_duplicate(self):
+        uploaded = snapshot(version=2, cameras=[camera(ip='10.0.0.1')])
+        self.upload(uploaded)
+        self.client.login_result = dict(snapshot(version=3, cameras=[camera(ip='10.0.0.2')]),
+                                        token='cm1.token')
+        self.sync.login('code12345')
+        self.assertTrue(self.settled())
+
+        self.collected = local_of(uploaded)
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(2, len(self.pushes()))
+
+    def test_a_conflict_download_is_not_sent_back_unchanged(self):
+        self.upload(snapshot(version=2, cameras=[camera(ip='10.0.0.1')]))
+        self.client.raises['push'] = CloudConflict('配置已在别处更新',
+                                                   snapshot(version=9, cameras=[camera(ip='10.0.0.9')]))
+        self.collected = local_of(snapshot(cameras=[camera(ip='10.0.0.3')]))
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+
+        self.sync.push_now()
+        self.assertTrue(self.settled())
+
+        self.assertEqual(2, len(self.pushes()), '被顶回来的那份就是云端现在的样子')
+
     # ---------- 离线与占用 ----------
 
     def test_a_change_made_while_offline_is_resent_once_the_link_is_back(self):
         self.sync.login('code12345')
         self.assertTrue(self.settled())
+        self.change_locally()
         self.client.raises['push'] = CloudError('无法连接云端服务，请检查网络或稍后再试。')
 
         self.sync.push_now()

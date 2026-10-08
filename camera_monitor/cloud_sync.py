@@ -87,9 +87,13 @@ class CloudSync(QObject):
         # 正在把云端配置往本机写。这期间本机存储发出的「变了」全是我们自己写的，
         # 不能当成用户的改动再传回去——那就成了死循环。
         self.applying = False
-        # 上一次成功传上去的那份长什么样。一模一样就不再传——服务端每收一次
+        # 云端现在那份在本机上传时长什么样。一模一样就不再传——服务端每收一次
         # 都会把版本号加一，多发的每一次都会被人看成「它又在上传了」。
+        # 每次传上去、每次落下云端配置都要更新（见 _apply）
         self.last_pushed = ''
+        # 正在落云端配置时调了 push_later：本机和云端对不上了，_apply 收尾不能再把
+        # last_pushed 记成本机这份
+        self._diverged = False
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(POLL_INTERVAL_MS)
@@ -324,6 +328,7 @@ class CloudSync(QObject):
             return
         self.pending_changes = True
         self.last_pushed = ''
+        self._diverged = True
 
     def push_now(self):
         if not self.token or self.closing or self.mode() == 'managed':
@@ -455,10 +460,9 @@ class CloudSync(QObject):
         # 和 _on_done 一样：已经退出、被解绑或被占用清掉了令牌，结果就不能再落到本机
         if self.closing or self._stale() or not self.token:
             return
-        # 服务端已经把最新配置一并返回，直接采用，不必再发一次请求
+        # 服务端已经把最新配置一并返回，直接采用，不必再发一次请求。
+        # 去重的基准由 _apply 改成这份
         self.pending_changes = False
-        # 云端这份和我们上次传的不是一回事了，下次有改动照常传
-        self.last_pushed = ''
         self._apply(snapshot)
         self._remember(snapshot)
         self.status.emit('配置已在别处更新，已载入最新版本。')
@@ -541,6 +545,7 @@ class CloudSync(QObject):
         # 往本机存储写的时候，DeviceNames 这些会发「变了」的信号，界面那边接着
         # 就去排上传。云端配置是我们自己刚写进去的，不该再传回去。
         self.applying = True
+        self._diverged = False
         try:
             # 先切模式再落配置：托管模式要先锁好界面，再把全屏之类的设置铺上去
             # （放在 applying 里面，mode_changed 的处理函数动本机设置也不会排上传）
@@ -549,5 +554,18 @@ class CloudSync(QObject):
             self.applied.emit(result)
         finally:
             self.applying = False
+        # 本机现在就是云端那份，把去重的基准换成它：不换的话，现场改回上次传过的样子
+        # 会被当成重复跳过，后台永远看不到；换成云端下发的原文也不行，它比本机上传时
+        # 多了 fullscreen 之类的键，每收一次下发都会多传一次。所以用 collector 再取一遍
+        self.last_pushed = '' if self._diverged else self._local_fingerprint()
         if announce and result.credential_failures:
             self.status.emit('部分摄像头密码未能写入系统安全存储，需要在连接设置中手动输入。')
+
+    def _local_fingerprint(self):
+        # 托管点位不上传，用不着基准，也省得去读一遍钥匙串
+        if self.mode() == 'managed':
+            return ''
+        payload = self.collector()
+        if payload is None:
+            return ''
+        return cloud_state.config_fingerprint(payload['layout'], payload['cameras'])
