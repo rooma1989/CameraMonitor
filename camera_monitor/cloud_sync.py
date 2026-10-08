@@ -61,6 +61,9 @@ class CloudSync(QObject):
     # 安全存储一时读不出会话（刚开机钥匙串服务还没起来之类）。和 session_changed(False)
     # 分开：后者意味着登录真的没了，托管电脑会据此解绑回欢迎页；这里只是暂时连不上
     storage_unavailable = Signal(str)
+    # 首次登录走上传方向时，本机的开机启动 / 自动全屏被云端打开了：界面据此刷新勾选框、
+    # 对齐系统启动项。下发方向不用这个，applied 已经带着
+    startup_switches_changed = Signal()
 
     def __init__(self, names, options, store, collector, parent=None,
                  client=None, settings=None, session_store=None,
@@ -381,8 +384,9 @@ class CloudSync(QObject):
             return
 
         if kind == 'login':
+            silent = bool(self._relogin_pending)
             self._relogin_pending = ''
-            self._finish_login(payload, self._sender_context())
+            self._finish_login(payload, self._sender_context(), silent=silent)
         elif not self.token:
             # 请求发出去之后已经退出（或被解绑）了：结果不能再落到本机，
             # 否则刚清掉的缓存和模式又被写回来，下次启动又进了云端
@@ -408,7 +412,7 @@ class CloudSync(QObject):
             self._remember(payload)
             self.status.emit(f'{self.profile_name()} · 配置已上传（版本 {payload.get("version")}）')
 
-    def _finish_login(self, payload, auth_code):
+    def _finish_login(self, payload, auth_code, silent=False):
         self.token = str(payload.get('token', ''))
 
         # 登录在服务端已经成功、令牌也拿到了。本机存不住授权码只影响「下次启动
@@ -442,12 +446,29 @@ class CloudSync(QObject):
             self.applying = False
 
         self._remember(payload)
+        # 两个开关各自「开着的一边说了算」，只在人手登录时这样做。静默重登（令牌过期）时
+        # 本机一直跟着云端，两边不一样只能是后台刚改过、本机还没拉到，要以云端为准。
+        # 托管点位一律以云端为准，也不合并
+        merge = not silent and cloud_state.profile_mode(payload) != 'managed'
+        keep, adopt = cloud_state.first_login_switches(payload, self.names.settings) if merge else ([], [])
         if direction == 'download':
+            if keep:
+                # 本机开着的照样落下去（设置和启动项都留着），落完再把这一边传上去
+                payload = dict(payload, layout=dict(payload.get('layout') or {}, **{key: True for key in keep}))
             self._apply(payload)
+            if keep:
+                # 去重基准此时是本机这份，和云端对不上，得先清掉
+                self.push_later()
+                self.schedule_push()
             message = f'已连接「{self.profile_name()}」，配置来自云端。'
         else:
             # 上传方向：本机这份正是要保留的，绝不能先用云端的空配置把它抹掉。
             # 只记下版本号，等这次上传成功后缓存自然会被结果覆盖。
+            if adopt:
+                for key in adopt:
+                    self.names.settings.setValue(f'monitor/{key}', True)
+                self.names.settings.sync()
+                self.startup_switches_changed.emit()
             message = f'已连接「{self.profile_name()}」，本机配置将上传为该点位的初始配置。'
             self.schedule_push()
 

@@ -259,6 +259,7 @@ class Window(QMainWindow):
         self.cloud.mode_changed.connect(self.on_cloud_mode)
         self.cloud.revoked.connect(self.on_cloud_revoked)
         self.cloud.storage_unavailable.connect(self.cloud_storage_unavailable)
+        self.cloud.startup_switches_changed.connect(self.cloud_startup_switches_changed)
         self.channel=CloudChannel(channel_url(getattr(self.cloud.client,'base_url',DEFAULT_BASE_URL)),
             self.channel_hello,parent=self)
         self.channel.message.connect(self.on_channel_message)
@@ -900,6 +901,12 @@ class Window(QMainWindow):
         # 只是钥匙串一时读不出来，不是登录失效：按钮如实显示未连接，但不退出托管、
         # 不删开机自启、不盖欢迎页。托管画面照缓存继续放，通道没开，断线提示自会出来
         self.cloud_panel.set_connected(False,self.cloud.profile_name())
+
+    def cloud_startup_switches_changed(self):
+        # 首次登录上传方向：云端开着的开关已写进本机设置。设不上时设置已改回 false，
+        # 随后那次上传读的就是 false，后台看得到没设上
+        if self.managed.active:return
+        self.sync_autostart()
 
     def cloud_login_result(self,ok,message):
         self.manual_login=False

@@ -276,6 +276,145 @@ class CloudRoundTripTests(unittest.TestCase):
         self.assertEqual(1, len(self.pushes()))
 
 
+class FirstLoginTests(unittest.TestCase):
+    """首次登录：两个开关各自「开着的一边说了算」，不能被谁也没选过的缺省 false 抹掉。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        vault = MemoryVault()
+        patcher = patch('camera_monitor.credentials.CredentialStore.vault', lambda _self: vault)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def window(self, fake, **preset):
+        names = DeviceNames(isolated_settings(self)('names.ini'))
+        for key, value in preset.items():
+            names.settings.setValue(f'monitor/{key}', value)
+        self.autostart = fake
+        window = make_window(self, device_names=names, autostart=fake)
+        window.thumbnails.request = lambda *args, **kwargs: None
+        window.cloud_start_timer.stop()
+        window.channel.start = lambda: None
+        self.client = EchoClient()
+        window.cloud.client = self.client
+        return window
+
+    def login(self, window, cameras, **switches):
+        snap = dict(snapshot(cameras=cameras), token='cm1.token', mode='full')
+        # 新后台的 normalizeLayout 总带着这两个键，缺省 false
+        snap['layout'] = dict(snap['layout'], fullscreen=False,
+                              **dict({'autostart': False, 'start_fullscreen': False}, **switches))
+        self.client.login_result = snap
+        window.cloud.login('code12345')
+        self.settle(window)
+
+    def settle(self, window):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and window.cloud.calls:
+            QApplication.processEvents()
+            time.sleep(0.01)
+        QApplication.processEvents()
+
+    def upload_now(self, window):
+        """不等防抖两秒：确认排上了上传，当场传掉。"""
+        cloud = window.cloud
+        self.assertTrue(cloud.pending_changes, '要把本机这一边传上去')
+        cloud.push_timer.stop()
+        cloud.push_now()
+        self.settle(window)
+        pushes = [call for call in self.client.calls if call[0] == 'push']
+        self.assertEqual(1, len(pushes))
+        return pushes[0][3]
+
+    def setting(self, window, key):
+        return truthy(window.device_names.settings.value(f'monitor/{key}', False))
+
+    def test_downloading_keeps_a_local_tick(self):
+        window = self.window(FakeAutoStart(enabled=True), autostart=True, start_fullscreen=True)
+
+        self.login(window, cameras=[camera()])
+
+        self.assertEqual(1, len(window.wall.tiles), '云端有摄像头，走下发方向')
+        self.assertTrue(self.setting(window, 'autostart'))
+        self.assertTrue(self.setting(window, 'start_fullscreen'))
+        self.assertTrue(self.autostart.enabled, '启动项不能被删')
+        self.assertNotIn('disable', self.autostart.calls)
+        self.assertTrue(window.autostart_toggle.isChecked())
+        self.assertTrue(window.start_fullscreen_toggle.isChecked())
+        layout = self.upload_now(window)
+        self.assertTrue(layout['autostart'])
+        self.assertTrue(layout['start_fullscreen'])
+
+    def test_downloading_still_takes_a_cloud_tick(self):
+        window = self.window(FakeAutoStart())
+
+        self.login(window, cameras=[camera()], autostart=True)
+
+        self.assertTrue(self.setting(window, 'autostart'))
+        self.assertTrue(self.autostart.enabled)
+        self.assertFalse(window.cloud.pending_changes, '两边一致，没什么要传的')
+
+    def test_uploading_takes_a_cloud_tick(self):
+        window = self.window(FakeAutoStart())
+        window.wall.add_device(Device('10.0.0.9'))
+
+        self.login(window, cameras=[], autostart=True, start_fullscreen=True)
+
+        self.assertTrue(self.setting(window, 'autostart'))
+        self.assertTrue(self.setting(window, 'start_fullscreen'))
+        self.assertTrue(self.autostart.enabled, '云端开着的开机启动要在本机落下去')
+        self.assertTrue(window.autostart_toggle.isChecked())
+        self.assertTrue(window.start_fullscreen_toggle.isChecked())
+        layout = self.upload_now(window)
+        self.assertTrue(layout['autostart'], '上传的是两边取「或」')
+        self.assertTrue(layout['start_fullscreen'])
+
+    def test_uploading_keeps_a_local_tick(self):
+        window = self.window(FakeAutoStart(enabled=True), autostart=True)
+        window.wall.add_device(Device('10.0.0.9'))
+
+        self.login(window, cameras=[])
+
+        layout = self.upload_now(window)
+        self.assertTrue(layout['autostart'])
+        self.assertFalse(layout['start_fullscreen'])
+        self.assertTrue(self.autostart.enabled)
+
+    def test_a_silent_relogin_takes_the_cloud_side(self):
+        # 令牌过期后的静默重登不是首次登录：这时云端那份是后台刚改过的（比如管理员
+        # 刚把开机启动关掉），本机还开着只是还没拉到，不能反过来把它顶回去
+        window = self.window(FakeAutoStart(enabled=True), autostart=True)
+        window.cloud.settings.setValue('cloud/enabled', True)
+        window.cloud.session.save_session('code12345', 'cm1.old')
+        window.cloud.token = 'cm1.old'
+        snap = dict(snapshot(cameras=[camera()]), token='cm1.token', mode='full')
+        snap['layout'] = dict(snap['layout'], fullscreen=False, autostart=False, start_fullscreen=False)
+        self.client.login_result = snap
+
+        window.cloud.relogin()
+        self.settle(window)
+
+        self.assertEqual('cm1.token', window.cloud.token)
+        self.assertFalse(self.setting(window, 'autostart'))
+        self.assertFalse(self.autostart.enabled)
+        self.assertFalse(window.cloud.pending_changes)
+
+    def test_a_managed_profile_is_not_merged(self):
+        window = self.window(FakeAutoStart(enabled=True), start_fullscreen=True)
+        snap = dict(snapshot(cameras=[camera()]), token='cm1.token', mode='managed')
+        snap['layout'] = dict(snap['layout'], fullscreen=True, autostart=False, start_fullscreen=False)
+        self.client.login_result = snap
+
+        window.cloud.login('code12345')
+        self.settle(window)
+
+        self.assertFalse(self.setting(window, 'start_fullscreen'), '傻瓜模式以云端为准')
+        self.assertFalse(window.cloud.pending_changes)
+
+
 class AutoFullscreenTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

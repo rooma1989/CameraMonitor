@@ -162,6 +162,31 @@ def first_sync_direction(snapshot, local_camera_count) -> str:
     return 'download'
 
 
+STARTUP_SWITCHES = ('autostart', 'start_fullscreen')
+
+
+def first_login_switches(snapshot, settings):
+    """首次登录时两个开关各自「开着的一边说了算」，返回 (keep, adopt)。
+
+    新后台下发里总带着这两个键，缺省 false。那个 false 往往谁也没选过，不能拿它
+    把本机勾好的抹掉；云端开着的也不能被本机的缺省 false 顶掉。
+    keep：本机开着、云端关着的键。下发方向照本机留着，再传上去。
+    adopt：云端开着、本机关着的键。上传方向先在本机打开，传上去的就是两边取「或」。
+    云端下发里没有的键（旧后台）两边都不算。
+    """
+    layout = (snapshot or {}).get('layout') or {}
+    keep, adopt = [], []
+    for key in STARTUP_SWITCHES:
+        if key not in layout:
+            continue
+        local, cloud = flag(settings.value(f'monitor/{key}', False)), flag(layout[key])
+        if local and not cloud:
+            keep.append(key)
+        elif cloud and not local:
+            adopt.append(key)
+    return keep, adopt
+
+
 @dataclass
 class AppliedConfig:
     devices: list = field(default_factory=list)
