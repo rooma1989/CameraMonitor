@@ -132,3 +132,7 @@
 - **关机、注销时不弹大屏密码**：勾了「启动后自动全屏」的电脑一直全屏，Windows 关机或注销时系统要关掉所有窗口，`closeEvent` 以前会弹大屏密码框，屏幕前没人输，关机就卡住。现在和傻瓜模式一样认 `authorized_quit`（`allow_session_quit` 在 `commitDataRequest` 里设上）：放行时直接关，不弹密码。人手关窗口（Alt+F4、点关闭）照旧要密码。macOS 上 ⌘Q、程序坞「退出」也走 `commitDataRequest`，分不清是不是注销，同样不弹密码就退出；现场电脑都是 Windows，macOS 只是开发机，见[傻瓜模式设计](2026-10-03-managed-mode-design.md) §12。
 - **打包冒烟测试隔离**：`packaging/launcher.py --packaging-smoke-test`（`build-windows.bat`、macOS 打包脚本在打好的程序上跑）以前直接构造真窗口，会按打包机上的设置删掉或补上开机启动项，读写真实设置。现在由 `smoke_window(folder)` 建窗口：设置全放进临时目录的 ini，启动项换成什么都不做的 `NoAutoStart`。原有的 TLS、WebSocket、JPEG、图标检查不变。
 - **测试**：`tests/support.make_window` 默认注入 `FakeAutoStart`。直接构造 `Window` 的几个旧用例也改成传假的 AutoStart，因为窗口一打开就会用 `is_enabled()` 去读本机的启动项。
+
+### 已知限制
+
+- **没传上去的改动不跨重启**：登录云端的电脑断网时改了勾选（或墙），改动只记在内存里（`CloudSync.pending_changes`），联网后的下一次心跳补传。补传之前关掉软件，这次改动就丢了：重启后先铺离线缓存（云端上一份），再拉云端，本机这一步不会再传上去。勾选本身已经写进本机设置，但启动时从云端拉下来的那份会把它改回去。要解决得把「待补传」和对应的配置落到本机，这次不做。
