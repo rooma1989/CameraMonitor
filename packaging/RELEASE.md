@@ -28,7 +28,7 @@
 - 第一次打开软件会出现欢迎页，可以输入设备码，也可以选择单机使用。老用户升级后不会出现欢迎页。
 - 软件会在本机记录运行日志，方便排查现场问题。
 
-验证：521 项自动化测试通过。
+验证：523 项自动化测试通过（Windows 与 macOS 打包机上各跑一遍）。
 
 Windows 11 x64：下载 CameraMonitor-Windows11-x64.zip，解压后运行 CameraMonitor.exe，不需要安装 Python。
 macOS 14+ Apple M 系列：解压后把 Camera Monitor.app 拖进「应用程序」。
