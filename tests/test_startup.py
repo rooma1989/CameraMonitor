@@ -54,6 +54,12 @@ class StartupRouteTests(unittest.TestCase):
 
         self.assertEqual(startup.WELCOME, self.route())
 
+    def test_the_standalone_wall_snapshot_is_not_a_previous_install(self):
+        # 本机快照是这一版自己写的，不能让一台还没选用法的新电脑被当成老用户
+        self.names.setValue('local/snapshot', '{}')
+
+        self.assertEqual(startup.WELCOME, self.route())
+
     def test_unbinding_a_legacy_computer_returns_to_the_welcome_page(self):
         # 解绑后相机配置有意保留，名称键还在，但这次必须回到欢迎页
         self.names.setValue('monitor/capacity', 9)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from .choices import ChoiceButton as QComboBox
 
+import json
 import logging
 import logging.handlers
 import os
@@ -22,7 +23,7 @@ from .screen_lock import ScreenLock,request_unlock,PasswordSettingsDialog
 from .thumbnails import ThumbnailController,ThumbnailPreview
 from .connection_options import ConnectionOptions
 from .cloud_panel import CloudPanel
-from .cloud_state import camera_entry, flag, layout_entry, stream_mode
+from .cloud_state import apply_snapshot, cacheable, camera_entry, flag, layout_entry, stream_mode
 from .cloud_sync import CloudSync
 from . import startup
 from .welcome import WelcomePage
@@ -39,6 +40,9 @@ LOG_MAX_BYTES=1024*1024
 LOG_BACKUPS=3
 # 完整模式「启动后自动全屏」；它和 monitor/autostart 一样跟着 layout 同步到云端
 START_FULLSCREEN_KEY='monitor/start_fullscreen'
+# 不登录云端的电脑存的本机快照，格式同云端配置（剥掉密码）。local/ 不算启动分流里的「用过」
+LOCAL_SNAPSHOT_KEY='local/snapshot'
+LOCAL_SNAPSHOT_DELAY_MS=1000
 
 # 后台永久拒绝时给现场看的话：服务端原话面向管理员，这里说清楚该找谁、该做什么
 REVOKED_MESSAGES={
@@ -241,6 +245,11 @@ class Window(QMainWindow):
         self.start_fullscreen_toggle.toggled.connect(self.set_start_fullscreen)
         for box in (self.autostart_toggle,self.start_fullscreen_toggle):self.wall.toolbar_widget.layout().addWidget(box)
         self.applying_cloud=False
+        # 正在回放本机快照：这期间本机存储发出的「变了」是回放自己写的，不能再存一遍
+        self.replaying_local=False
+        self.local_snapshot_timer=QTimer(self);self.local_snapshot_timer.setSingleShot(True)
+        self.local_snapshot_timer.setInterval(LOCAL_SNAPSHOT_DELAY_MS)
+        self.local_snapshot_timer.timeout.connect(self.save_local_snapshot)
         self.cloud=CloudSync(self.device_names,self.connection_options,self.wall.credential_store,
             self.collect_cloud_payload,parent=self,settings=cloud_settings)
         self.cloud.status.connect(self.cloud_panel.set_status)
@@ -751,13 +760,49 @@ class Window(QMainWindow):
         self.set_welcome_visible(False)
 
     def start_cloud(self):
+        # 要在 cloud.start() 之前看：设置说登录了、钥匙串里却没有会话时它会把登录改成 false，
+        # 这种电脑的本机快照是登录云端之前存的，早就过时了，不能拿来回放
+        standalone=not self.cloud.enabled()
         # 先进傻瓜模式再铺缓存：锁好界面之后才把全屏之类的设置落下去
         if self.cloud.enabled() and self.cloud.mode()=='managed':self.managed.enter()
         self.cloud.start()
         if self.cloud.token:self.channel.start()
+        if standalone and self.welcome.isHidden():self.restore_local_snapshot()
         # 完整模式按勾选对齐一次：现场手动删了启动项，下次打开软件就补回来（和傻瓜模式一样）
         if not self.managed.active:self.sync_autostart()
         self.auto_fullscreen_timer.start(0)
+
+    def save_local_snapshot(self):
+        """单机电脑把现在的墙存一份到本机设置，重启后据此恢复。密码本来就在钥匙串里。"""
+        # 登录云端后以云端为准（它有自己的离线缓存）；退出云端后从下一次墙变化开始重新写
+        if self.cloud.enabled():return
+        payload=self.collect_cloud_payload(credentials=False)
+        if payload is None:return
+        settings=self.device_names.settings
+        settings.setValue(LOCAL_SNAPSHOT_KEY,json.dumps(cacheable(payload),ensure_ascii=False))
+        settings.sync()
+        if settings.status()!=settings.Status.NoError:logger.warning('本机快照没有写成功，下次打开墙会是空的')
+
+    def restore_local_snapshot(self):
+        raw=self.device_names.settings.value(LOCAL_SNAPSHOT_KEY,'')
+        if not raw:return
+        try:
+            snapshot=json.loads(str(raw))
+            if not isinstance(snapshot,dict):raise ValueError('不是 JSON 对象')
+        except ValueError as exc:
+            logger.warning('本机快照读不出来，已忽略：%s',exc);return
+        # 两个开关以本机设置为准：快照最多晚一秒，刚改完勾选就关软件的话，回放会把它改回去
+        layout={k:v for k,v in dict(snapshot.get('layout') or {}).items() if k not in ('autostart','start_fullscreen')}
+        snapshot=dict(snapshot,layout=layout,mode='full')
+        self.replaying_local=True
+        try:
+            # 快照里没有 password 键，apply_snapshot 不会碰钥匙串，已存的账号密码照样能用
+            self.apply_cloud_config(apply_snapshot(snapshot,self.device_names,self.connection_options,
+                self.wall.credential_store))
+        except Exception:
+            # 手改坏了的快照也不能让软件起不来，空着墙照常用
+            logger.warning('本机快照回放失败，已忽略',exc_info=True)
+        finally:self.replaying_local=False
 
     def auto_fullscreen(self):
         """完整模式勾了「启动后自动全屏」：打开时铺好了墙就进全屏，和按 F11 一样。"""
@@ -838,6 +883,8 @@ class Window(QMainWindow):
 
     def cloud_session_changed(self,connected):
         self.cloud_panel.set_connected(connected,self.cloud.profile_name())
+        # 退出云端时离线缓存跟着清掉了，马上把屏幕上这面墙存成本机快照，重启后还在
+        if not connected:self.note_local_change()
         if connected:
             # 人亲手登录成功才算接管回来；session_changed(True) 先于 login_result 发出
             if self.manual_login:self.channel_replaced=False
@@ -865,9 +912,17 @@ class Window(QMainWindow):
 
     def note_cloud_change(self, *args):
         """本机配置有改动就排一次上传；应用云端配置的过程中不回传，避免来回打架。"""
-        if not self.applying_cloud:self.cloud.schedule_push()
+        if self.applying_cloud or self.replaying_local:return
+        self.cloud.schedule_push()
+        self.note_local_change()
 
-    def collect_cloud_payload(self):
+    def note_local_change(self):
+        # 不登录云端的电脑没有离线缓存，另存一份本机快照；节流一秒，拖动格子时不连写
+        if not self.cloud.enabled() and not self.cloud.applying and not self.replaying_local:
+            self.local_snapshot_timer.start()
+
+    def collect_cloud_payload(self,credentials=True):
+        """credentials=False 时不读钥匙串：本机快照用不着账号密码，它们本来就在钥匙串里。"""
         if self.wall is None:return None
         cameras=[]
         for index,tile in enumerate(self.wall.slots):
@@ -875,7 +930,7 @@ class Window(QMainWindow):
             player=tile.player
             # 以设备表为准：重新搜索会刷新型号与 ONVIF 地址，画面里那份可能是旧的
             device=self.devices.get(player.device.ip,player.device)
-            try:saved=self.wall.credential_store.load(device.ip)
+            try:saved=self.wall.credential_store.load(device.ip) if credentials else None
             except Exception:saved=None
             cameras.append(camera_entry(device,slot_index=index,
                 display_name=self.device_names.get(device.ip),
@@ -968,6 +1023,8 @@ class Window(QMainWindow):
         if self.presentation and self.managed_fullscreen is None and not self.exit_fullscreen():
             event.ignore();return
         self.closing=True
+        # 改完不到一秒就关了软件：排着的本机快照当场写掉，否则重启后少了刚才那一步
+        if self.local_snapshot_timer.isActive():self.local_snapshot_timer.stop();self.save_local_snapshot()
         if self.worker and self.worker.isRunning():self.worker.cancel.set()
         # 先断下行通道再去等线程：cloud.stop() 可能要等好几秒，重启时新进程已经连上来，
         # 旧连接多挂这几秒就会和它互相顶
