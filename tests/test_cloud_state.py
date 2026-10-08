@@ -82,6 +82,18 @@ class PureMappingTests(unittest.TestCase):
         self.assertTrue(layout['fill_width'])
         self.assertEqual('阳光养老院', layout['organization'])
 
+    def test_layout_entry_carries_the_startup_switches_when_given(self):
+        layout = cloud_state.layout_entry(4, {}, False, '', autostart=True, start_fullscreen='false')
+
+        self.assertIs(True, layout['autostart'])
+        self.assertIs(False, layout['start_fullscreen'], 'QSettings 读回来的是字符串')
+
+    def test_layout_entry_leaves_the_startup_switches_out_when_unknown(self):
+        layout = cloud_state.layout_entry(4, {}, False, '')
+
+        self.assertNotIn('autostart', layout)
+        self.assertNotIn('start_fullscreen', layout)
+
     def test_first_sync_uploads_when_the_cloud_profile_is_still_empty(self):
         empty_cloud = {'cameras': []}
         filled_cloud = {'cameras': [{'ip': '10.0.0.1'}]}
@@ -157,6 +169,32 @@ class ApplyToLocalTests(unittest.TestCase):
         self.assertEqual('阳光养老院', settings.value('monitor/organization'))
         self.assertEqual(True, str(settings.value('monitor/fill_width')).lower() in ('true', '1'))
         self.assertEqual(4, int(settings.value('monitor/columns/12')))
+
+    def test_applying_a_snapshot_stores_the_startup_switches(self):
+        layout = {'capacity': 4, 'autostart': True, 'start_fullscreen': True}
+
+        result = cloud_state.apply_snapshot(self.snapshot(layout=layout), self.names,
+                                            self.options, self.store)
+
+        settings = self.names.settings
+        self.assertEqual('true', str(settings.value('monitor/autostart')).lower())
+        self.assertEqual('true', str(settings.value('monitor/start_fullscreen')).lower())
+        self.assertIs(True, result.autostart)
+        self.assertIs(True, result.start_fullscreen)
+
+    def test_an_old_backend_without_the_switches_leaves_them_alone(self):
+        self.names.settings.setValue('monitor/autostart', True)
+        self.names.settings.setValue('monitor/start_fullscreen', True)
+
+        result = cloud_state.apply_snapshot(self.snapshot(layout={'capacity': 4}), self.names,
+                                            self.options, self.store)
+
+        settings = self.names.settings
+        self.assertEqual('true', str(settings.value('monitor/autostart')).lower(),
+                         '旧后台不认识这两项，不能把本机勾选清掉')
+        self.assertEqual('true', str(settings.value('monitor/start_fullscreen')).lower())
+        self.assertIsNone(result.autostart)
+        self.assertIsNone(result.start_fullscreen)
 
     def test_applying_a_snapshot_returns_devices_and_per_camera_stream_settings(self):
         result = cloud_state.apply_snapshot(self.snapshot([self.camera()]), self.names,

@@ -102,7 +102,17 @@ def slot_order(cameras) -> list:
     return [positions.get(i, '') for i in range(max(positions) + 1)]
 
 
-def layout_entry(capacity, columns, fill_width, organization) -> dict:
+def flag(value) -> bool:
+    """QSettings 的 ini 读回来是 'true' / 'false' 字符串，bool('false') 却是 True。"""
+    if isinstance(value, str):
+        return value.strip().lower() in ('true', '1')
+    return bool(value)
+
+
+def layout_entry(capacity, columns, fill_width, organization,
+                 autostart=None, start_fullscreen=None) -> dict:
+    """autostart / start_fullscreen 留 None 表示「不知道」，不放进结果：
+    旧后台下发的配置里没有这两项，不能当成 false 把本机勾选清掉。"""
     normalised = {}
     for key, value in (columns or {}).items():
         try:
@@ -111,12 +121,16 @@ def layout_entry(capacity, columns, fill_width, organization) -> dict:
             continue
         if key in EQUAL_CAPACITIES and 1 <= value <= key:
             normalised[str(key)] = value
-    return {
+    layout = {
         'capacity': int(capacity) if int(capacity) in CAPACITIES else 4,
         'columns': normalised,
         'fill_width': bool(fill_width),
         'organization': (organization or '')[:80],
     }
+    for key, value in (('autostart', autostart), ('start_fullscreen', start_fullscreen)):
+        if value is not None:
+            layout[key] = flag(value)
+    return layout
 
 
 def cacheable(snapshot) -> dict:
@@ -160,6 +174,9 @@ class AppliedConfig:
     mode: str = 'full'
     fullscreen: bool = False
     escape_password_hash: str = ''
+    # 完整模式的两个开关；None 表示下发里没有（旧后台），本机设置不动
+    autostart: object = None
+    start_fullscreen: object = None
 
 
 def apply_snapshot(snapshot, names: DeviceNames, options: ConnectionOptions, store) -> AppliedConfig:
@@ -169,16 +186,21 @@ def apply_snapshot(snapshot, names: DeviceNames, options: ConnectionOptions, sto
     失败的 IP 会记在 credential_failures 里交给调用方提示。
     """
     cameras = list(snapshot.get('cameras') or [])
+    raw_layout = snapshot.get('layout') or {}
     layout = layout_entry(
-        (snapshot.get('layout') or {}).get('capacity', 4),
-        (snapshot.get('layout') or {}).get('columns', {}),
-        (snapshot.get('layout') or {}).get('fill_width', False),
-        (snapshot.get('layout') or {}).get('organization', ''),
+        raw_layout.get('capacity', 4),
+        raw_layout.get('columns', {}),
+        raw_layout.get('fill_width', False),
+        raw_layout.get('organization', ''),
+        raw_layout.get('autostart'),
+        raw_layout.get('start_fullscreen'),
     )
 
     applied = AppliedConfig(capacity=layout['capacity'],
                             organization=layout['organization'],
-                            fill_width=layout['fill_width'])
+                            fill_width=layout['fill_width'],
+                            autostart=layout.get('autostart'),
+                            start_fullscreen=layout.get('start_fullscreen'))
     applied.mode = profile_mode(snapshot)
     applied.fullscreen = bool((snapshot.get('layout') or {}).get('fullscreen', False))
     applied.escape_password_hash = str(snapshot.get('escape_password_hash') or '')
@@ -252,6 +274,9 @@ def _save_layout(names: DeviceNames, layout) -> None:
     settings.setValue('monitor/organization', layout['organization'])
     settings.setValue('monitor/fill_width', layout['fill_width'])
     settings.setValue('monitor/capacity', layout['capacity'])
+    for key in ('autostart', 'start_fullscreen'):
+        if key in layout:
+            settings.setValue(f'monitor/{key}', layout[key])
     for capacity in EQUAL_CAPACITIES:
         key = f'monitor/columns/{capacity}'
         value = layout['columns'].get(str(capacity))

@@ -88,6 +88,19 @@ class CloudWindowTests(unittest.TestCase):
         self.assertEqual('厨房', by_ip['10.0.0.2']['display_name'])
         self.assertEqual(3, by_ip['10.0.0.1']['slot_index'])
 
+    def test_the_upload_payload_carries_the_startup_switches(self):
+        settings = self.window.device_names.settings
+        payload = self.window.collect_cloud_payload()
+        self.assertIs(False, payload['layout']['autostart'], '没勾过就是 false')
+        self.assertIs(False, payload['layout']['start_fullscreen'])
+
+        settings.setValue('monitor/autostart', True)
+        settings.setValue('monitor/start_fullscreen', True)
+        payload = self.window.collect_cloud_payload()
+
+        self.assertIs(True, payload['layout']['autostart'])
+        self.assertIs(True, payload['layout']['start_fullscreen'])
+
     def test_a_camera_without_saved_credentials_omits_the_password(self):
         device = self.device('10.0.0.1')
         self.window.add_device(device)

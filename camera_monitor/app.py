@@ -36,6 +36,9 @@ logger=logging.getLogger(__name__)
 LOG_FILE='camera_monitor.log'
 LOG_MAX_BYTES=1024*1024
 LOG_BACKUPS=3
+# 完整模式的两个开关，和 fill_width 一样跟着 layout 同步到云端
+AUTOSTART_KEY='monitor/autostart'
+START_FULLSCREEN_KEY='monitor/start_fullscreen'
 
 # 后台永久拒绝时给现场看的话：服务端原话面向管理员，这里说清楚该找谁、该做什么
 REVOKED_MESSAGES={
@@ -835,7 +838,8 @@ class Window(QMainWindow):
             if value not in (None,''):columns[capacity]=value
         return {'version':self.cloud.version(),
                 'layout':layout_entry(self.wall.capacity,columns,
-                    self.wall._fill_width,settings.value('monitor/organization','') or ''),
+                    self.wall._fill_width,settings.value('monitor/organization','') or '',
+                    settings.value(AUTOSTART_KEY,False),settings.value(START_FULLSCREEN_KEY,False)),
                 'cameras':cameras}
 
     def apply_cloud_config(self,result):
