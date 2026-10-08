@@ -223,9 +223,10 @@ class LocalSnapshotTests(unittest.TestCase):
         self.assertEqual([], window.wall.tiles)
 
     def test_a_snapshot_with_a_malformed_layout_is_ignored_and_startup_goes_on(self):
-        for layout in ('"oops"', '[1, 2]', '[["capacity"]]', '7'):
+        for index, layout in enumerate(('"oops"', '[1, 2]', '[["capacity"]]', '7')):
             with self.subTest(layout=layout):
-                names = DeviceNames(self.ini(f'names-{len(layout)}-{layout[:2]}.ini'))
+                # 文件名只用序号：Windows 的文件名里不能有引号、方括号这些
+                names = DeviceNames(self.ini(f'names-malformed-{index}.ini'))
                 names.settings.setValue(KEY, '{"layout": %s, "cameras": []}' % layout)
                 names.settings.setValue('monitor/autostart', True)
                 window = self.window(device_names=names)

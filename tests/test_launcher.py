@@ -32,6 +32,8 @@ class SmokeTestIsolationTests(unittest.TestCase):
 
     def setUp(self):
         vault = MemoryVault()
+        # Windows 上冒烟测试会检查系统凭据库的 priority（keyring 后端都有），假的也得有
+        vault.priority = 1
         patcher = patch('camera_monitor.credentials.CredentialStore.vault', lambda _self: vault)
         patcher.start()
         self.addCleanup(patcher.stop)

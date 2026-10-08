@@ -194,8 +194,9 @@ class CloudChannelTests(unittest.TestCase):
 
         with self.assertLogs('camera_monitor.cloud_channel', level='WARNING') as logs:
             self.channel.start()
-            # 退避 50ms：等到至少连败两次，第二次相同的错误不该再出一条
-            self.assertTrue(pump(lambda: len(attempts) >= 2))
+            # 退避 50ms：等到至少连败两次，第二次相同的错误不该再出一条。
+            # Windows 连本机没人听的端口要重试 SYN，一次失败就要 2 秒左右，所以多给点时间
+            self.assertTrue(pump(lambda: len(attempts) >= 2, timeout=15.0))
             idle(0.1)
 
         self.assertEqual(1, len(logs.records))
