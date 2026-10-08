@@ -40,7 +40,16 @@ jobs:
       - name: Run regression tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest discover -s tests -v
+          PYTHONIOENCODING: utf-8
+        shell: bash
+        # 完整日志要登录才能看；失败时把每一条错误转成注解，运行概览页上直接可见
+        run: |
+          set +e
+          python -m unittest discover -s tests -v > test-output.txt 2>&1
+          code=$?
+          cat test-output.txt
+          if [ $code -ne 0 ]; then python packaging/annotate_failures.py test-output.txt; fi
+          exit $code
       - name: Build portable EXE
         run: python -m PyInstaller --noconfirm --clean --distpath dist-win --workpath build-win packaging/CameraMonitor-windows.spec
       - name: Verify x64 executable
