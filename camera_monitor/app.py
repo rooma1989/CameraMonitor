@@ -759,6 +759,11 @@ class Window(QMainWindow):
     def use_standalone(self):
         startup.choose_standalone(self.cloud.settings)
         self.set_welcome_visible(False)
+        # 欢迎页盖着时启动不回放本机快照（比如从欢迎页登录过、在侧边栏退出云端后重启）。
+        # 选了单机就补上；墙上已经有画面（同一次运行里刚解绑回来）就不动它。
+        # 自动全屏只在打开软件时判断，这里不进
+        if not self.cloud.enabled() and self.wall is not None and not self.wall.tiles:
+            self.restore_local_snapshot()
 
     def start_cloud(self):
         # 要在 cloud.start() 之前看：设置说登录了、钥匙串里却没有会话时它会把登录改成 false，

@@ -170,6 +170,27 @@ class LocalSnapshotTests(unittest.TestCase):
 
         self.assertEqual([], second.wall.tiles)
 
+    def test_choosing_standalone_on_the_welcome_page_restores_it(self):
+        # 从欢迎页登录过云端的电脑（cloud/standalone=false），在侧边栏退出云端、重启：
+        # 盖着欢迎页时不回放，选了「单机使用」之后墙要铺回来
+        first = self.window()
+        self.build_wall(first)
+        before = self.slots(first)
+        self.flush(first)
+        cloud = self.ini('cloud.ini')
+        cloud.setValue('cloud/standalone', False)
+
+        second = self.window(cloud_settings=cloud, fresh_install=True)
+        second.start_cloud()
+        self.assertFalse(second.welcome.isHidden())
+        self.assertEqual([], second.wall.tiles)
+
+        second.use_standalone()
+
+        self.assertEqual(before, self.slots(second))
+        self.assertEqual([1], second.wall.connect_all_calls)
+        self.assertFalse(second.presentation, '自动全屏只在打开软件时判断')
+
     def test_logging_out_saves_the_wall_on_screen(self):
         # 退出云端后缓存就清了，不马上存一份的话，重启后墙是空的
         window = self.window()
