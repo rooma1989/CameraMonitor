@@ -8,14 +8,26 @@ from camera_monitor import autostart
 from camera_monitor.autostart import APP_NAME, FLAG, MAC_LABEL, WANTED_KEY, AutoStart
 
 
+RUN = r'Software\Microsoft\Windows\CurrentVersion\Run'
+APPROVED = r'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
+
+
 class FakeRegistry:
-    """只实现 autostart 用到的那几个 winreg 接口。"""
+    """只实现 autostart 用到的那几个 winreg 接口，按键路径分开存。
+
+    和真 winreg 一样：打开不存在的键、读删不存在的值都抛 FileNotFoundError。
+    Run 键一开始就在（正常系统上都有），StartupApproved\Run 要任务管理器动过才有。
+    """
     HKEY_CURRENT_USER = 'HKCU'
     KEY_READ = 1
     KEY_SET_VALUE = 2
     REG_SZ = 1
+    REG_BINARY = 3
 
     class _Key:
+        def __init__(self, values):
+            self.values = values
+
         def __enter__(self):
             return self
 
@@ -23,29 +35,41 @@ class FakeRegistry:
             return False
 
     def __init__(self):
-        self.values = {}
+        self.keys = {RUN: {}}
         self.created = False
 
-    def OpenKey(self, root, path, reserved, access):
-        return self._Key()
+    @property
+    def values(self):
+        """Run 键里的值。"""
+        return self.keys[RUN]
+
+    def OpenKey(self, root, path, reserved=0, access=KEY_READ):
+        if path not in self.keys:
+            raise FileNotFoundError(path)
+        return self._Key(self.keys[path])
 
     def CreateKey(self, root, path):
         # 真 winreg 里 CreateKey 是"有就打开、没有就建"，返回的句柄可写
         self.created = True
-        return self._Key()
+        return self._Key(self.keys.setdefault(path, {}))
 
     def SetValueEx(self, key, name, reserved, kind, value):
-        self.values[name] = value
+        key.values[name] = value
 
     def DeleteValue(self, key, name):
-        if name not in self.values:
+        if name not in key.values:
             raise FileNotFoundError(name)
-        del self.values[name]
+        del key.values[name]
 
     def QueryValueEx(self, key, name):
-        if name not in self.values:
+        if name not in key.values:
             raise FileNotFoundError(name)
-        return self.values[name], self.REG_SZ
+        value = key.values[name]
+        return value, self.REG_BINARY if isinstance(value, bytes) else self.REG_SZ
+
+    def task_manager(self, first_byte):
+        """任务管理器「启动应用」里切换启用 / 禁用时写下的值：12 字节，后 8 字节是时间。"""
+        self.keys.setdefault(APPROVED, {})[APP_NAME] = bytes([first_byte]) + bytes(11)
 
 
 class WindowsAutoStartTests(unittest.TestCase):
@@ -95,6 +119,54 @@ class WindowsAutoStartTests(unittest.TestCase):
         self.assertTrue(self.auto.enable())
 
         self.assertEqual('', self.auto.last_error)
+
+    # ---------- 任务管理器「启动应用」 ----------
+
+    def test_disabled_in_task_manager_counts_as_not_enabled(self):
+        self.auto.enable()
+        for first_byte in (0x03, 0x07, 0x01):
+            with self.subTest(first_byte=first_byte):
+                self.registry.task_manager(first_byte)
+
+                self.assertFalse(self.auto.is_enabled(), '任务管理器里禁用了，开机不会启动')
+
+    def test_enabled_in_task_manager_still_counts(self):
+        self.auto.enable()
+        for first_byte in (0x02, 0x06):
+            with self.subTest(first_byte=first_byte):
+                self.registry.task_manager(first_byte)
+
+                self.assertTrue(self.auto.is_enabled())
+
+    def test_enabling_clears_the_task_manager_switch(self):
+        self.registry.task_manager(0x03)
+
+        self.assertTrue(self.auto.enable())
+
+        self.assertNotIn(APP_NAME, self.registry.keys[APPROVED], '勾上就要真的开机启动')
+        self.assertTrue(self.auto.is_enabled())
+
+    def test_enabling_without_any_task_manager_record_is_fine(self):
+        self.assertNotIn(APPROVED, self.registry.keys)
+
+        self.assertTrue(self.auto.enable())
+        self.registry.keys[APPROVED] = {}
+        self.assertTrue(self.auto.enable(), '键在、值不在也一样')
+
+    def test_failing_to_clear_the_task_manager_switch_is_a_failed_enable(self):
+        self.registry.task_manager(0x03)
+        delete = self.registry.DeleteValue
+
+        def guarded(key, name):
+            if key.values is self.registry.keys[APPROVED]:
+                raise PermissionError('denied')
+            return delete(key, name)
+        self.registry.DeleteValue = guarded
+
+        with self.assertLogs('camera_monitor.autostart', level=logging.WARNING):
+            self.assertFalse(self.auto.enable())
+
+        self.assertEqual(autostart.WRITE_FAILED, self.auto.last_error)
 
     def test_disable_failure_is_logged_and_returns_false(self):
         def boom(*args):

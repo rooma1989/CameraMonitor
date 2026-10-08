@@ -11,6 +11,10 @@ from pathlib import Path
 APP_NAME = 'CameraMonitor'
 MAC_LABEL = 'com.cameramonitor.desktop'
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
+# 任务管理器「启动应用」里点「禁用」不删 Run 键里的值，而是在这里记一个同名的 REG_BINARY：
+# 12 字节，第一个字节是偶数（0x02、0x06）表示启用，奇数（0x03、0x07）表示禁用，后 8 字节是
+# 改动时间。被禁用时 Run 键里的值还在，开机却不会启动
+APPROVED_KEY = r'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
 FLAG = '--autostart'
 # 完整模式「开机自动启动」勾选框记的是「想要」，系统启动项才是「实际」
 WANTED_KEY = 'monitor/autostart'
@@ -102,6 +106,13 @@ class AutoStart:
                 # 可能不存在，用 OpenKey 会直接失败。
                 with reg.CreateKey(reg.HKEY_CURRENT_USER, RUN_KEY) as key:
                     reg.SetValueEx(key, APP_NAME, 0, reg.REG_SZ, self.command())
+                # 任务管理器里禁用过的话，光写 Run 键开机还是不启动：把那条记录删掉才算真的打开。
+                # 没有这条记录（键或值不在）是常态
+                try:
+                    with reg.OpenKey(reg.HKEY_CURRENT_USER, APPROVED_KEY, 0, reg.KEY_SET_VALUE) as key:
+                        reg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass
                 return ''
             if self.platform == 'darwin':
                 if self._is_temporary_mac_location():
@@ -143,7 +154,7 @@ class AutoStart:
                 reg = self._winreg()
                 with reg.OpenKey(reg.HKEY_CURRENT_USER, RUN_KEY, 0, reg.KEY_READ) as key:
                     value, _ = reg.QueryValueEx(key, APP_NAME)
-                return value == self.command()
+                return value == self.command() and not self._disabled_in_task_manager(reg)
             if self.platform == 'darwin':
                 # 只看文件在不在不够：程序挪过位置后旧 plist 还在，却指向不存在的路径
                 with open(self.plist_path, 'rb') as fh:
@@ -153,3 +164,13 @@ class AutoStart:
             # 文件不存在、损坏或结构不对，都按"没启用"处理
             pass
         return False
+
+    def _disabled_in_task_manager(self, reg):
+        try:
+            with reg.OpenKey(reg.HKEY_CURRENT_USER, APPROVED_KEY, 0, reg.KEY_READ) as key:
+                value, _ = reg.QueryValueEx(key, APP_NAME)
+        except OSError:
+            # 没有记录就是没在任务管理器里动过，按启用算
+            return False
+        # 第一个字节是奇数就是禁用；读出来不是字节串的怪值不认
+        return isinstance(value, (bytes, bytearray)) and len(value) > 0 and bool(value[0] & 1)
