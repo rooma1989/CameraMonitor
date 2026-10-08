@@ -7,6 +7,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 from camera_monitor.device_names import DeviceNames
 from camera_monitor.app import Window
+from support import FakeAutoStart
 from camera_monitor.discovery import Device
 from camera_monitor.credentials import CredentialStore
 from test_credentials import MemoryVault
@@ -63,7 +64,7 @@ class DeviceNameTests(unittest.TestCase):
     def test_rename_updates_list_and_live_title_without_reconnecting(self):
         cloud = QSettings(os.path.join(self.folder.name, 'cloud.ini'), QSettings.Format.IniFormat)
         cloud.setValue('cloud/standalone', True)  # 老用户，不盖欢迎页
-        window = Window(device_names=self.names, cloud_settings=cloud)
+        window = Window(device_names=self.names, cloud_settings=cloud, autostart=FakeAutoStart())
         self.addCleanup(window.close)
         window.wall.credential_store = CredentialStore(MemoryVault())
         window.add_device(Device('192.168.1.234', name='MT5'))

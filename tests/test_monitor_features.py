@@ -7,6 +7,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 from camera_monitor.app import Window
+from support import FakeAutoStart
 from camera_monitor.device_names import DeviceNames
 from camera_monitor.discovery import Device
 from camera_monitor.credentials import CredentialStore
@@ -24,7 +25,7 @@ class MonitorFeatures(unittest.TestCase):
   cloud=QSettings(self.tmp.name+'/cloud.ini',QSettings.Format.IniFormat)
   cloud.setValue('cloud/standalone',True)  # 老用户，不盖欢迎页
   with patch('camera_monitor.app.interfaces',return_value=[]):
-   w=Window(device_names=self.names,cloud_settings=cloud)
+   w=Window(device_names=self.names,cloud_settings=cloud,autostart=FakeAutoStart())
   assert not w.cloud.enabled()
   w.wall.credential_store=CredentialStore(MemoryVault())
   self.addCleanup(w.close);return w

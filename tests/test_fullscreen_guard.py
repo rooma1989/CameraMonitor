@@ -7,6 +7,7 @@ from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from camera_monitor.app import Window
+from support import FakeAutoStart
 from camera_monitor.credentials import CredentialStore
 from camera_monitor.device_names import DeviceNames
 from camera_monitor.discovery import Device
@@ -26,7 +27,7 @@ class FullscreenGuardTests(unittest.TestCase):
         # 模拟选过单机的老用户，否则整个窗口都盖着欢迎页（键盘被禁用，F11 也不响应）
         cloud.setValue('cloud/standalone', True)
         with patch('camera_monitor.app.interfaces', return_value=[]):
-            self.window = Window(device_names=names, cloud_settings=cloud)
+            self.window = Window(device_names=names, cloud_settings=cloud, autostart=FakeAutoStart())
         self.window.wall.credential_store = CredentialStore(MemoryVault())
         self.addCleanup(self.close_window)
         self.window.show()
