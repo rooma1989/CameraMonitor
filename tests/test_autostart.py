@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from camera_monitor.autostart import APP_NAME, FLAG, MAC_LABEL, AutoStart
+from camera_monitor import autostart
+from camera_monitor.autostart import APP_NAME, FLAG, MAC_LABEL, WANTED_KEY, AutoStart
 
 
 class FakeRegistry:
@@ -86,6 +87,14 @@ class WindowsAutoStartTests(unittest.TestCase):
             self.assertFalse(self.auto.enable())
 
         self.assertIn('PermissionError', '\n'.join(logs.output))
+        self.assertEqual(autostart.WRITE_FAILED, self.auto.last_error)
+
+    def test_a_later_success_clears_the_failure_reason(self):
+        self.auto.last_error = autostart.WRITE_FAILED
+
+        self.assertTrue(self.auto.enable())
+
+        self.assertEqual('', self.auto.last_error)
 
     def test_disable_failure_is_logged_and_returns_false(self):
         def boom(*args):
@@ -152,6 +161,9 @@ class MacAutoStartTests(unittest.TestCase):
 
         self.assertFalse((self.agents / f'{MAC_LABEL}.plist').exists())
         self.assertIn('/Applications', '\n'.join(logs.output))
+        self.assertEqual(autostart.TEMPORARY_LOCATION, auto.last_error)
+        self.assertIn('应用程序', autostart.failure_message(auto.last_error),
+                      '现场要知道该怎么做，不能只说失败')
 
     def test_enable_refuses_mounted_dmg_path(self):
         auto = self._auto_at('/Volumes/Camera Monitor/Camera Monitor.app/Contents/MacOS/Camera Monitor')
@@ -171,8 +183,78 @@ class SourceRunTests(unittest.TestCase):
         auto = AutoStart(platform='win32', executable='python.exe', frozen=False, registry=registry)
 
         self.assertFalse(auto.enable())
+        self.assertEqual(autostart.FROM_SOURCE, auto.last_error)
         self.assertFalse(auto.disable())
         self.assertEqual({}, registry.values)
+
+
+class FailureMessageTests(unittest.TestCase):
+    def test_every_reason_has_its_own_message(self):
+        reasons = (autostart.FROM_SOURCE, autostart.TEMPORARY_LOCATION,
+                   autostart.WRITE_FAILED, autostart.UNSUPPORTED)
+        messages = [autostart.failure_message(reason) for reason in reasons]
+
+        self.assertEqual(len(reasons), len(set(messages)))
+        for message in messages + [autostart.failure_message('')]:
+            self.assertTrue(message.startswith('开机自动启动没有设置成功'), message)
+
+
+class FakeSettings:
+    def __init__(self, **values):
+        self.values = dict(values)
+
+    def value(self, key, default=None):
+        return self.values.get(key, default)
+
+    def setValue(self, key, value):
+        self.values[key] = value
+
+    def sync(self):
+        pass
+
+
+class RecordingAutoStart:
+    def __init__(self, works=True):
+        self.works = works
+        self.calls = []
+        self.last_error = ''
+
+    def enable(self):
+        self.calls.append('enable')
+        if not self.works:
+            self.last_error = autostart.WRITE_FAILED
+        return self.works
+
+    def disable(self):
+        self.calls.append('disable')
+        return True
+
+
+class ReconcileTests(unittest.TestCase):
+    def test_wanted_but_missing_is_put_back(self):
+        auto = RecordingAutoStart()
+
+        self.assertTrue(autostart.reconcile(auto, FakeSettings(**{WANTED_KEY: 'true'})))
+
+        self.assertEqual(['enable'], auto.calls)
+
+    def test_not_wanted_is_removed(self):
+        for settings in (FakeSettings(), FakeSettings(**{WANTED_KEY: 'false'})):
+            auto = RecordingAutoStart()
+
+            self.assertTrue(autostart.reconcile(auto, settings))
+
+            self.assertEqual(['disable'], auto.calls, '从没勾过的电脑也要删掉留下的启动项')
+
+    def test_a_failed_enable_writes_the_wish_back_to_false(self):
+        auto = RecordingAutoStart(works=False)
+        settings = FakeSettings(**{WANTED_KEY: True})
+
+        with self.assertLogs('camera_monitor.autostart', level=logging.WARNING):
+            self.assertFalse(autostart.reconcile(auto, settings))
+
+        self.assertIs(False, settings.values[WANTED_KEY],
+                      '设置要和实际一致，下一次同步后台才看得到没设上')
 
 
 if __name__ == '__main__':

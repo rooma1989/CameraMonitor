@@ -25,6 +25,36 @@ def isolated_settings(case):
     return make
 
 
+class FakeAutoStart:
+    """窗口用的假启动项：只记账，绝不碰注册表和 LaunchAgents。
+
+    works=False 时 enable() 失败，last_error 记下 error。
+    """
+
+    def __init__(self, enabled=False, works=True, error='temporary_location'):
+        self.enabled = enabled
+        self.works = works
+        self.error = error
+        self.last_error = ''
+        self.calls = []
+
+    def enable(self):
+        self.calls.append('enable')
+        if not self.works:
+            self.last_error = self.error
+            return False
+        self.enabled, self.last_error = True, ''
+        return True
+
+    def disable(self):
+        self.calls.append('disable')
+        self.enabled = False
+        return True
+
+    def is_enabled(self):
+        return self.enabled
+
+
 def make_window(case, fresh_install=False, **kwargs):
     """Build a Window whose settings are isolated and whose timers stop on cleanup.
 
@@ -42,6 +72,8 @@ def make_window(case, fresh_install=False, **kwargs):
     if not fresh_install:
         cloud.setValue('cloud/standalone', True)
     kwargs.setdefault('connection_options', ConnectionOptions(ini('conn.ini')))
+    # 真的 AutoStart 源码运行时虽然不写，is_enabled() 仍会去读本机的启动项
+    kwargs.setdefault('autostart', FakeAutoStart())
 
     window = Window(**kwargs)
     assert not window.cloud.enabled(), '测试不得继承这台机器上真实的云端登录态'

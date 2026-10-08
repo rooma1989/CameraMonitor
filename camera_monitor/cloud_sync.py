@@ -314,6 +314,17 @@ class CloudSync(QObject):
         if self.token:
             self.push_timer.start()
 
+    def push_later(self):
+        """云端刚下发的配置在本机落不下去（比如开机启动写不进系统），下一次心跳把实际状态传上去。
+
+        正在落配置时 schedule_push 会被挡掉，所以只记下来。上次传的那份可能正好和本机
+        现在一样，不清掉的话 push_now 会把它当成重复跳过。
+        """
+        if not self.enabled() or self.mode() == 'managed':
+            return
+        self.pending_changes = True
+        self.last_pushed = ''
+
     def push_now(self):
         if not self.token or self.closing or self.mode() == 'managed':
             return

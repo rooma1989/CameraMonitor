@@ -12,8 +12,50 @@ APP_NAME = 'CameraMonitor'
 MAC_LABEL = 'com.cameramonitor.desktop'
 RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
 FLAG = '--autostart'
+# 完整模式「开机自动启动」勾选框记的是「想要」，系统启动项才是「实际」
+WANTED_KEY = 'monitor/autostart'
+
+# enable() 失败的原因，记在 last_error 里，界面据此告诉现场该怎么做
+FROM_SOURCE = 'from_source'
+TEMPORARY_LOCATION = 'temporary_location'
+WRITE_FAILED = 'write_failed'
+UNSUPPORTED = 'unsupported'
+_REASONS = {
+    FROM_SOURCE: '从源码运行时不改动系统启动项',
+    TEMPORARY_LOCATION: '请先把程序拖进「应用程序」文件夹，再从那里打开',
+    WRITE_FAILED: '写入系统启动项失败，请检查本机权限后重试',
+    UNSUPPORTED: '这个操作系统暂不支持',
+}
 
 logger = logging.getLogger(__name__)
+
+
+def failure_message(reason):
+    return f'开机自动启动没有设置成功：{_REASONS.get(reason, "原因不明，请查看日志")}。'
+
+
+def _truthy(value):
+    return str(value).lower() in ('true', '1')
+
+
+def reconcile(autostart, settings):
+    """按设置里「想要」的去对齐系统启动项：想要就补上，不想要就删掉。
+
+    不先看 is_enabled()：程序挪过位置后旧启动项还指着原路径，is_enabled() 说没有，
+    不删的话它就一直留着。enable / disable 本来就可以重复调用。
+    想要却写不进去时把设置写回 false 并返回 False：设置要和实际一致，下一次同步
+    传上去，后台才看得到没设上。删除失败 AutoStart 自己会记日志，这里不再管。
+    """
+    if not _truthy(settings.value(WANTED_KEY, False)):
+        autostart.disable()
+        return True
+    if autostart.enable():
+        return True
+    logger.warning('开机自动启动没有设置成功（%s），已把设置改回未勾选',
+                   getattr(autostart, 'last_error', '') or '原因不明')
+    settings.setValue(WANTED_KEY, False)
+    settings.sync()
+    return False
 
 
 class AutoStart:
@@ -24,6 +66,7 @@ class AutoStart:
         self.frozen = getattr(sys, 'frozen', False) if frozen is None else frozen
         self.launch_agents = Path(launch_agents) if launch_agents else Path.home() / 'Library' / 'LaunchAgents'
         self.registry = registry
+        self.last_error = ''
 
     @property
     def plist_path(self):
@@ -45,8 +88,13 @@ class AutoStart:
         return self.registry
 
     def enable(self):
+        self.last_error = self._enable()
+        return not self.last_error
+
+    def _enable(self):
+        """成功返回空串，失败返回原因。"""
         if not self.frozen:
-            return False
+            return FROM_SOURCE
         try:
             if self.platform == 'win32':
                 reg = self._winreg()
@@ -54,22 +102,23 @@ class AutoStart:
                 # 可能不存在，用 OpenKey 会直接失败。
                 with reg.CreateKey(reg.HKEY_CURRENT_USER, RUN_KEY) as key:
                     reg.SetValueEx(key, APP_NAME, 0, reg.REG_SZ, self.command())
-                return True
+                return ''
             if self.platform == 'darwin':
                 if self._is_temporary_mac_location():
                     logger.warning('开机自动运行未启用：程序在临时位置运行（%s），'
                                    '请先把它移动到 /Applications 再试', self.executable)
-                    return False
+                    return TEMPORARY_LOCATION
                 self.launch_agents.mkdir(parents=True, exist_ok=True)
                 with open(self.plist_path, 'wb') as fh:
                     plistlib.dump({'Label': MAC_LABEL,
                                    'ProgramArguments': [self.executable, FLAG],
                                    'RunAtLoad': True}, fh)
-                return True
+                return ''
         except OSError as exc:
             # 只记异常类型，足够排查，也不会把路径或系统返回的细节写进日志
             logger.warning('开机自动运行启用失败：%s', type(exc).__name__)
-        return False
+            return WRITE_FAILED
+        return UNSUPPORTED
 
     def disable(self):
         if not self.frozen:

@@ -11,7 +11,7 @@ from PySide6.QtCore import QThread, Signal, Qt, QTimer, QEvent, QSettings, QStan
 from PySide6.QtGui import QShortcut, QKeySequence, QIcon
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QLineEdit, QBoxLayout, QInputDialog,
+    QLabel, QPushButton, QLineEdit, QBoxLayout, QInputDialog, QCheckBox,
     QAbstractItemView, QPlainTextEdit, QProgressBar, QSplitter, QFrame, QScrollArea, QStackedWidget, QSizePolicy)
 from . import __version__
 from .discovery import Device, interfaces, scan, validate_target_ip
@@ -22,11 +22,12 @@ from .screen_lock import ScreenLock,request_unlock,PasswordSettingsDialog
 from .thumbnails import ThumbnailController,ThumbnailPreview
 from .connection_options import ConnectionOptions
 from .cloud_panel import CloudPanel
-from .cloud_state import camera_entry, layout_entry, stream_mode
+from .cloud_state import camera_entry, flag, layout_entry, stream_mode
 from .cloud_sync import CloudSync
 from . import startup
 from .welcome import WelcomePage
-from .autostart import AutoStart, FLAG as AUTOSTART_FLAG
+from .autostart import (AutoStart, FLAG as AUTOSTART_FLAG, WANTED_KEY as AUTOSTART_KEY,
+    failure_message as autostart_failure, reconcile as reconcile_autostart)
 from .cloud import DEFAULT_BASE_URL
 from .cloud_channel import CloudChannel, channel_url
 from .managed_mode import ManagedController
@@ -36,8 +37,7 @@ logger=logging.getLogger(__name__)
 LOG_FILE='camera_monitor.log'
 LOG_MAX_BYTES=1024*1024
 LOG_BACKUPS=3
-# 完整模式的两个开关，和 fill_width 一样跟着 layout 同步到云端
-AUTOSTART_KEY='monitor/autostart'
+# 完整模式「启动后自动全屏」；它和 monitor/autostart 一样跟着 layout 同步到云端
 START_FULLSCREEN_KEY='monitor/start_fullscreen'
 
 # 后台永久拒绝时给现场看的话：服务端原话面向管理员，这里说清楚该找谁、该做什么
@@ -77,6 +77,7 @@ class Window(QMainWindow):
         # 必须赶在 ScreenLock 之前判断：它一构造就往 DeviceNames 的设置里写初始密码
         self.startup_route=startup.startup_route(cloud_settings,self.device_names.settings)
         self.closing=False
+        self.autostart=autostart if autostart is not None else AutoStart()
         self.worker = None
         self.target_ip = None
         self.target_received = False
@@ -230,6 +231,15 @@ class Window(QMainWindow):
         self.password_settings=QPushButton('大屏密码')
         self.password_settings.clicked.connect(self.show_password_settings)
         self.wall.toolbar_widget.layout().addWidget(self.password_settings)
+        # 完整模式的两个开关。工具栏在傻瓜模式下整条隐藏，这两个也跟着看不见
+        self.autostart_toggle=QCheckBox('开机自动启动')
+        self.autostart_toggle.setToolTip('电脑开机登录后自动打开监控软件。')
+        self.start_fullscreen_toggle=QCheckBox('启动后自动全屏')
+        self.start_fullscreen_toggle.setToolTip('软件打开时直接进入全屏（墙上要有摄像头）；退出全屏仍要输入大屏密码。')
+        self.refresh_startup_toggles()
+        self.autostart_toggle.toggled.connect(self.set_autostart_wanted)
+        self.start_fullscreen_toggle.toggled.connect(self.set_start_fullscreen)
+        for box in (self.autostart_toggle,self.start_fullscreen_toggle):self.wall.toolbar_widget.layout().addWidget(box)
         self.applying_cloud=False
         self.cloud=CloudSync(self.device_names,self.connection_options,self.wall.credential_store,
             self.collect_cloud_payload,parent=self,settings=cloud_settings)
@@ -249,8 +259,7 @@ class Window(QMainWindow):
         self.channel_replaced=False
         self.manual_login=False
         self.snapshot_uploader=SnapshotUploader(self.upload_snapshot,self)
-        self.managed=ManagedController(self,self.channel,self.snapshot_uploader,
-            autostart if autostart is not None else AutoStart())
+        self.managed=ManagedController(self,self.channel,self.snapshot_uploader,self.autostart)
         # 同样只用绑定方法：device_names 的生命周期可能比窗口长
         self.device_names.changed.connect(self.note_cloud_change)
         self.device_names.appearance_changed.connect(self.note_cloud_change)
@@ -367,6 +376,32 @@ class Window(QMainWindow):
         dialog=ThumbnailPreview(image,f'{self.device_names.display(self.devices[ip])} · {ip}',self)
         try:dialog.exec()
         finally:dialog.deleteLater()
+
+    def refresh_startup_toggles(self):
+        """开机启动显示系统启动项的实际状态，自动全屏显示设置。不触发上传。"""
+        values=((self.autostart_toggle,self.autostart.is_enabled()),
+            (self.start_fullscreen_toggle,flag(self.device_names.settings.value(START_FULLSCREEN_KEY,False))))
+        for box,checked in values:
+            box.blockSignals(True);box.setChecked(bool(checked));box.blockSignals(False)
+
+    def sync_autostart(self):
+        """按 monitor/autostart 对齐系统启动项。想要却设不上时提示原因，返回 False。"""
+        ok=reconcile_autostart(self.autostart,self.device_names.settings)
+        if not ok:self.status.setText(autostart_failure(getattr(self.autostart,'last_error','')))
+        self.refresh_startup_toggles()
+        return ok
+
+    def set_autostart_wanted(self,checked):
+        settings=self.device_names.settings
+        settings.setValue(AUTOSTART_KEY,bool(checked));settings.sync()
+        self.sync_autostart()
+        self.note_cloud_change()
+
+    def set_start_fullscreen(self,checked):
+        # 只记下来，下次打开软件才生效：当场进全屏的话，人还没反应过来就要输大屏密码了
+        settings=self.device_names.settings
+        settings.setValue(START_FULLSCREEN_KEY,bool(checked));settings.sync()
+        self.note_cloud_change()
 
     def show_password_settings(self):
         if self.presentation:return
@@ -715,6 +750,8 @@ class Window(QMainWindow):
         if self.cloud.enabled() and self.cloud.mode()=='managed':self.managed.enter()
         self.cloud.start()
         if self.cloud.token:self.channel.start()
+        # 完整模式按勾选对齐一次：现场手动删了启动项，下次打开软件就补回来（和傻瓜模式一样）
+        if not self.managed.active:self.sync_autostart()
 
     def show_welcome(self,message=''):
         self.welcome.set_busy(False)
@@ -883,6 +920,12 @@ class Window(QMainWindow):
             self.applying_cloud=False
         # 配置回来了画面却是黑的，还得人一格一格去点连接。既然摄像头、通道和
         # 密码都齐了，就直接连上。已经在播的那几格不会被打断。
+        # 两个开关只在完整模式下落到界面和系统：傻瓜模式开机启动一直开着，
+        # 下发的值已由 apply_snapshot 写进设置，切回完整模式时生效
+        if result.mode!='managed':
+            self.refresh_startup_toggles()
+            # 云端要开机启动、本机却设不上：设置已改回 false，记下要把实际状态传上去
+            if result.autostart is not None and not self.sync_autostart():self.cloud.push_later()
         self.wall.connect_all()
         if result.mode=='managed':self.managed.apply(result)
 
