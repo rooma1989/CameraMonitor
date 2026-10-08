@@ -499,6 +499,26 @@ class MultiView(QDialog):
         except OSError:self.hint.setText('位置已调整，但未能保存到本机。')
         self.layout_changed.emit()
 
+    def arrange(self,order):
+        """按给定的顺序（每格一个 IP，空串是空格）把已经在墙上的格子挪到位。
+
+        只挪位置，不重建画面、不断流；顺序里没有的、或格子号超出当前布局的，
+        按顺序补进空格，一台都不丢。不存本机、不发 layout_changed：调用方在落地
+        云端配置，顺序已经写好了，再发一次只会反过来触发上传。
+        """
+        if self.closing:return False
+        by_ip={t.player.device.ip:t for t in self.tiles}
+        slots=[None]*len(self.slots)
+        for index,ip in enumerate(list(order)[:self.capacity]):
+            tile=by_ip.pop(ip,None)
+            if tile is not None:slots[index]=tile
+        for tile in [t for t in self.slots if t is not None and t.player.device.ip in by_ip]:
+            slots[slots.index(None)]=tile
+        if slots==self.slots:return False
+        self.slots=slots
+        self.tiles=[t for t in self.slots if t is not None]
+        self.relayout();return True
+
     def move_tile(self,source,index):
         if self.closing or source not in self.tiles or not 0<=index<self.capacity:return False
         old=self.slots.index(source)

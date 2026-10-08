@@ -258,6 +258,51 @@ class CloudApplyDoesNotEchoBackTests(unittest.TestCase):
         self.assertEqual([1], self.window.wall.connect_all_calls,
                          '落地云端配置之后应当自动连接')
 
+    def camera(self, ip, slot):
+        camera = dict(self.snapshot()['cameras'][0])
+        camera.update(ip=ip, slot_index=slot, display_name=ip)
+        return camera
+
+    def slot_ips(self):
+        wall = self.window.wall
+        return [tile.player.device.ip if tile else '' for tile in wall.slots[:wall.capacity]]
+
+    def test_a_new_order_from_the_cloud_moves_the_tiles_already_on_the_wall(self):
+        # 真机上抓到的：后台远程页拖完顺序点「保存并下发」，现场画面纹丝不动。
+        # 已经在墙上的格子只认第一次摆的位置，云端的新顺序要挪过去，而且不能重建、不能断流
+        first = self.snapshot()
+        first['cameras'] = [self.camera('10.0.0.1', 0), self.camera('10.0.0.2', 1)]
+        self.window.cloud._apply(first)
+        self.assertEqual(['10.0.0.1', '10.0.0.2', '', ''], self.slot_ips())
+        tiles = {tile.player.device.ip: tile for tile in self.window.wall.tiles}
+
+        swapped = self.snapshot()
+        swapped['version'] = 6
+        swapped['cameras'] = [self.camera('10.0.0.1', 3), self.camera('10.0.0.2', 0)]
+        self.window.cloud._apply(swapped)
+
+        self.assertEqual(['10.0.0.2', '', '', '10.0.0.1'], self.slot_ips(), '要挪到云端给的格子，空格也要留着')
+        self.assertIs(tiles['10.0.0.1'], self.window.wall.slots[3], '只挪位置，不重建画面')
+        self.assertIs(tiles['10.0.0.2'], self.window.wall.slots[0])
+        for _ in range(20):
+            QApplication.processEvents()
+        self.assertFalse(self.window.cloud.push_timer.isActive(), '挪格子是在落地云端配置，不该反过来上传')
+
+    def test_a_cloud_order_that_does_not_fit_the_layout_still_keeps_every_camera(self):
+        first = self.snapshot()
+        first['cameras'] = [self.camera('10.0.0.1', 0), self.camera('10.0.0.2', 1)]
+        self.window.cloud._apply(first)
+
+        odd = self.snapshot()
+        odd['version'] = 6
+        # 格子号超出 4 格布局：挪不进去的按空位补上，摄像头一台都不能丢
+        odd['cameras'] = [self.camera('10.0.0.1', 9), self.camera('10.0.0.2', 2)]
+        self.window.cloud._apply(odd)
+
+        ips = self.slot_ips()
+        self.assertEqual('10.0.0.2', ips[2])
+        self.assertIn('10.0.0.1', ips)
+
     def test_a_tile_that_already_exists_picks_up_the_new_password(self):
         snapshot = self.snapshot()
         self.window.cloud._apply(snapshot)
