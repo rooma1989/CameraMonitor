@@ -133,6 +133,17 @@
 - **打包冒烟测试隔离**：`packaging/launcher.py --packaging-smoke-test`（`build-windows.bat`、macOS 打包脚本在打好的程序上跑）以前直接构造真窗口，会按打包机上的设置删掉或补上开机启动项，读写真实设置。现在由 `smoke_window(folder)` 建窗口：设置全放进临时目录的 ini，启动项换成什么都不做的 `NoAutoStart`。原有的 TLS、WebSocket、JPEG、图标检查不变。
 - **测试**：`tests/support.make_window` 默认注入 `FakeAutoStart`。直接构造 `Window` 的几个旧用例也改成传假的 AutoStart，因为窗口一打开就会用 `is_enabled()` 去读本机的启动项。
 
+### 0.9.1：开机自启时全屏被系统挤掉
+
+现场（Windows 11，0.9.0，完整模式，两个开关都勾）：开机后界面是演示布局（侧边栏、工具栏都收起，`presentation=True`），窗口却是带标题栏的最大化，任务栏露在下面，也没有密码框。代码里只有 `exit_fullscreen`（要密码）和 `leave_managed_window` 会退出全屏，都不沾边，所以是登录那一阵 Windows 自己把窗口挤出了全屏（桌面、任务栏还在起，工作区和 DPI 在变）；窗口又不在前台，任务栏一直压在它上面。调整：
+
+- **开机自启晚 5 秒再全屏**：命令行带 `--autostart`（`launched_at_boot()` 读 `QCoreApplication.arguments()`，`Window(boot_launch=...)` 可注入）时，`start_cloud` 把自动全屏定时器排在 `BOOT_FULLSCREEN_DELAY_MS`（5000）之后，人手打开照旧是 0。
+- **自动全屏后的保护期**：`auto_fullscreen` 进全屏后记下 `fullscreen_guard_until = clock() + 60`（`FULLSCREEN_GUARD_SECONDS`，`Window(clock=...)` 可注入）。保护期内完整模式的窗口在演示布局下、非授权地掉出全屏，算系统干的：`changeEvent` 不再排 `native_exit_requested`（那会弹密码），而是排 `reassert_fullscreen` 悄悄 `showFullScreen()`，记一行 INFO。另外在自动全屏后 1、3、10 秒（`FULLSCREEN_CHECKS_MS`）各 `check_fullscreen` 一次，防系统挤了窗口却没报状态变化。保护期外照旧弹密码；人手 F11 进的全屏没有保护期。
+- **不和别的逻辑打架**：输对密码退出时 `presentation` 已是 False，并清掉保护期；傻瓜模式（`managed_fullscreen` 不是 None）`set_managed_fullscreen` 会清掉保护期，`reassert_fullscreen`、`check_fullscreen` 也都先看它；退出傻瓜模式的落定期（`settling_state`）在 `changeEvent` 里先于保护期处理，`reassert_fullscreen` 也不碰。
+- **抢前台、压住任务栏**：自动全屏和每次重新全屏后 `raise_()`、`activateWindow()`。演示全屏时（完整模式 F11、自动全屏、系统原生进全屏、密码框前的回全屏，以及傻瓜模式云端要全屏）用 `win_topmost.set_topmost` 对 `int(winId())` 调 `SetWindowPos(HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE)`；输密码退出、`leave_managed_window`、`set_managed_fullscreen(False)` 时用 `HWND_NOTOPMOST` 放回去。非 Windows 什么都不做；`user32`、`platform` 可注入，置顶开关也可经 `Window(topmost=...)` 注入。不用 Qt 的 `WindowStaysOnTopHint`：改窗口标志会重建原生窗口。大屏密码框（`request_unlock` → `UnlockDialog(lock, parent=window)`）和维护入口（`EscapeDialog(lock, window)`）都以窗口为父，在 Windows 上是它拥有的窗口，始终在它上面。
+- **诊断日志**：`changeEvent` 每次窗口状态变化记一行 INFO：旧状态 → 新状态、`presentation`、`managed_fullscreen`、`authorized_exit`。现场日志在 `%APPDATA%\Camera Monitor\logs\camera_monitor.log`。
+- **代价**：置顶的全屏监控墙会压住其他程序弹出的窗口（例如系统更新提示），要看得先输密码退出全屏。完整模式的全屏本来就要密码才能退出，接受。
+
 ### 已知限制
 
 - **没传上去的改动不跨重启**：登录云端的电脑断网时改了勾选（或墙），改动只记在内存里（`CloudSync.pending_changes`），联网后的下一次心跳补传。补传之前关掉软件，这次改动就丢了：重启后先铺离线缓存（云端上一份），再拉云端，本机这一步不会再传上去。勾选本身已经写进本机设置，但启动时从云端拉下来的那份会把它改回去。要解决得把「待补传」和对应的配置落到本机，这次不做。
