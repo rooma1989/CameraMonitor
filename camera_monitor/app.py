@@ -774,7 +774,7 @@ class Window(QMainWindow):
 
     def save_local_snapshot(self):
         """单机电脑把现在的墙存一份到本机设置，重启后据此恢复。密码本来就在钥匙串里。"""
-        # 登录云端后以云端为准（它有自己的离线缓存）；退出云端后从下一次墙变化开始重新写
+        # 登录云端后以云端为准（它有自己的离线缓存）；退出云端时和之后每次墙变化再接着写
         if self.cloud.enabled():return
         payload=self.collect_cloud_payload(credentials=False)
         if payload is None:return
@@ -992,14 +992,14 @@ class Window(QMainWindow):
             for device in self.devices.values():self.thumbnails.request(device)
         finally:
             self.applying_cloud=False
-        # 配置回来了画面却是黑的，还得人一格一格去点连接。既然摄像头、通道和
-        # 密码都齐了，就直接连上。已经在播的那几格不会被打断。
         # 两个开关只在完整模式下落到界面和系统：傻瓜模式开机启动一直开着，
         # 下发的值已由 apply_snapshot 写进设置，切回完整模式时生效
         if result.mode!='managed':
             self.refresh_startup_toggles()
             # 云端要开机启动、本机却设不上：设置已改回 false，记下要把实际状态传上去
             if result.autostart is not None and not self.sync_autostart():self.cloud.push_later()
+        # 配置回来了画面却是黑的，还得人一格一格去点连接。既然摄像头、通道和
+        # 密码都齐了，就直接连上。已经在播的那几格不会被打断。
         self.wall.connect_all()
         if result.mode=='managed':self.managed.apply(result)
 
